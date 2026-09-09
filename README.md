@@ -1,3 +1,11 @@
+---
+
+<img width="1102" height="791" alt="image" src="https://github.com/user-attachments/assets/d93d6ea7-7bd6-4b84-a2e7-0ab8a8e74e9e" />
+
+
+---
+
+
 # Qwythos-9B Claude Model — Local Windows Setup
 
 This folder contains everything you need to run the Qwythos-9B Claude model locally on Windows, using Ollama and LiteLLM to route it to the Claude CLI.
