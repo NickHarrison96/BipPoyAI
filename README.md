@@ -4,13 +4,12 @@ This folder contains everything you need to run the Qwythos-9B Claude model loca
 
 ## What you get
 
-- A fully quantized model (Q4_K_M) that runs on CPU or GPU
 - An interactive config tool (`config.py`) to tune context size, GPU offload, CPU threads, batch size, and temperature
 - An automation script (`setup.py`) that builds the Ollama model and launches the LiteLLM proxy
 - A generated Modelfile and config.yaml ready for Ollama
 
 ## Prerequisites
-
+- `Qwythos-9B-Claude-Mythos-5-1M-MTP-Q4_K_M.gguf` — the model weights (about 5.8 GB) huggingface DL: https://huggingface.co/empero-ai/Qwythos-9B-Claude-Mythos-5-1M
 - Windows 10/11 (64-bit)
 - Python 3.11+ installed (add Python to your PATH if you haven't)
 - Ollama installed and running (`ollama serve`) — download from https://ollama.com
@@ -30,7 +29,7 @@ That's it — you can now chat with the model locally.
 
 ## What each file does
 
-- `Qwythos-9B-Claude-Mythos-5-1M-MTP-Q4_K_M.gguf` — the model weights (about 5.8 GB)
+
 - `config.py` — interactive tool to pick the GGUF file, set hardware limits, and generate `Modelfile` + `config.yaml`
 - `config.yaml` — LiteLLM proxy configuration (model name, Ollama endpoint, context size)
 - `setup.py` — automation script that detects the GGUF, optionally creates a model-named folder, builds a Modelfile, runs `ollama create`, spins up the LiteLLM proxy, then launches the Claude CLI through it
