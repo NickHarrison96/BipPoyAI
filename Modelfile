@@ -1,0 +1,5 @@
+FROM ./Qwythos-9B-Claude-Mythos-5-1M-MTP-Q4_K_M.gguf
+
+# Base execution configuration
+PARAMETER num_ctx 65536
+PARAMETER temperature 0.2

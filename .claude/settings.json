@@ -1,0 +1,5 @@
+{
+  "enabledPlugins": {
+    "browser-use@claude-plugins-official": true
+  }
+}

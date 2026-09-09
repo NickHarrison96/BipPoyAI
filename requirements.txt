@@ -1,0 +1,4 @@
+litellm
+PySide6
+requests
+psutil
