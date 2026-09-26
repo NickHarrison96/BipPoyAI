@@ -2,3 +2,5 @@ litellm
 PySide6
 requests
 psutil
+pynvml
+ollama

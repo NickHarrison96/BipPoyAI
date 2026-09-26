@@ -12,20 +12,25 @@ Usage:
 import sys
 import os
 import re
-import textwrap
 from pathlib import Path
 
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QPushButton, QTextEdit, QFrame, QScrollArea, QSplitter, QGroupBox,
-    QFormLayout, QComboBox, QSlider, QSpinBox, QDoubleSpinBox, QSizePolicy,
-    QMessageBox, QStackedWidget,
+    QPushButton, QTextEdit, QFrame, QScrollArea, QGroupBox, QLineEdit,
+    QFormLayout, QComboBox, QSpinBox, QDoubleSpinBox, QSizePolicy,
+    QMessageBox,
 )
-from PySide6.QtCore import Qt, QTimer, QPropertyAnimation, QEasingCurve, QSize
-from PySide6.QtGui import QFont, QTextCursor, QKeyEvent, QIcon, QFontMetrics
+from PySide6.QtCore import Qt, QTimer, QSize, QEvent
+from PySide6.QtGui import QFont, QTextCursor, QKeyEvent
 
-from styles import get_main_stylesheet, get_status_pill_style, COLORS
+from styles import get_main_stylesheet, COLORS
 from backend import OllamaBackend, derive_model_tag
+from widgets import (
+    CrackedBackdrop, ScanlineOverlay, LEDDot, HardwareStrip,
+    BarMeter, MascotGlyph,
+)
+from configs import ModelConfig, load_full, write_all
+from hardware import detect as detect_hardware
 
 
 # ─── Resolve working directory (always relative to this script) ───────────────
@@ -183,31 +188,28 @@ class SettingsPanel(QFrame):
         super().__init__(parent)
         self.backend = backend
         self.setObjectName("settingsPanel")
-        self.setFixedWidth(320)
+        self.setFixedWidth(340)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(12)
+        layout.setSpacing(10)
 
         # Title
         title = QLabel("⚙  Settings")
-        title.setObjectName("titleLabel")
-        title.setStyleSheet(f"font-size: 18px; font-weight: 700; color: {COLORS['text_primary']};")
+        title.setStyleSheet(f"font-size: 17px; font-weight: 700; color: {COLORS['text_primary']};")
         layout.addWidget(title)
 
         # ── Inference Settings ──
         inf_group = QGroupBox("Inference")
         inf_layout = QFormLayout(inf_group)
-        inf_layout.setSpacing(10)
+        inf_layout.setSpacing(8)
         inf_layout.setContentsMargins(12, 20, 12, 12)
 
-        # Context Size
         self.ctx_combo = QComboBox()
         self.ctx_combo.addItems(["8192", "16384", "32768", "65536"])
         self.ctx_combo.setCurrentText(str(backend.num_ctx))
         inf_layout.addRow("Context Size:", self.ctx_combo)
 
-        # Temperature
         self.temp_spin = QDoubleSpinBox()
         self.temp_spin.setRange(0.0, 2.0)
         self.temp_spin.setSingleStep(0.1)
@@ -215,7 +217,6 @@ class SettingsPanel(QFrame):
         self.temp_spin.setValue(backend.temperature)
         inf_layout.addRow("Temperature:", self.temp_spin)
 
-        # Max Tokens
         self.max_tokens_combo = QComboBox()
         self.max_tokens_combo.addItems(["2048", "4096", "8192", "16384"])
         self.max_tokens_combo.setCurrentText(str(backend.max_tokens))
@@ -226,24 +227,21 @@ class SettingsPanel(QFrame):
         # ── Hardware Settings ──
         hw_group = QGroupBox("Hardware (Modelfile)")
         hw_layout = QFormLayout(hw_group)
-        hw_layout.setSpacing(10)
+        hw_layout.setSpacing(8)
         hw_layout.setContentsMargins(12, 20, 12, 12)
 
-        # GPU Layers
         self.gpu_spin = QSpinBox()
         self.gpu_spin.setRange(0, 99)
         self.gpu_spin.setValue(99)
         self.gpu_spin.setToolTip("99 = full GPU offload. 0 = CPU only.")
         hw_layout.addRow("GPU Layers:", self.gpu_spin)
 
-        # CPU Threads
         cpu_count = os.cpu_count() or 8
         self.cpu_spin = QSpinBox()
         self.cpu_spin.setRange(1, cpu_count)
         self.cpu_spin.setValue(max(1, cpu_count - 2))
         hw_layout.addRow("CPU Threads:", self.cpu_spin)
 
-        # Batch Size
         self.batch_combo = QComboBox()
         self.batch_combo.addItems(["256", "512", "1024"])
         self.batch_combo.setCurrentText("512")
@@ -251,16 +249,48 @@ class SettingsPanel(QFrame):
 
         layout.addWidget(hw_group)
 
+        # ── Connection Settings ──
+        conn_group = QGroupBox("Connection")
+        conn_layout = QFormLayout(conn_group)
+        conn_layout.setSpacing(8)
+        conn_layout.setContentsMargins(12, 20, 12, 12)
+
+        self.engine_combo = QComboBox()
+        self.engine_combo.addItems(["litellm_chat", "litellm_standard", "direct"])
+        self.engine_combo.setToolTip(
+            "litellm_chat: recommended — LiteLLM proxy, chat endpoint\n"
+            "litellm_standard: LiteLLM proxy, standard endpoint\n"
+            "direct: talk to Ollama directly on port 11434"
+        )
+        conn_layout.addRow("Engine Mode:", self.engine_combo)
+
+        self.litellm_url_edit = QLineEdit()
+        self.litellm_url_edit.setPlaceholderText("http://127.0.0.1:4000")
+        conn_layout.addRow("LiteLLM URL:", self.litellm_url_edit)
+
+        self.litellm_key_edit = QLineEdit()
+        self.litellm_key_edit.setPlaceholderText("API key")
+        conn_layout.addRow("LiteLLM Key:", self.litellm_key_edit)
+
+        self.ollama_url_edit = QLineEdit()
+        self.ollama_url_edit.setPlaceholderText("http://127.0.0.1:11434")
+        conn_layout.addRow("Ollama URL:", self.ollama_url_edit)
+
+        layout.addWidget(conn_group)
+
         # ── Actions ──
-        # Apply to running session
+        auto_btn = QPushButton("🔍  Auto-detect Hardware")
+        auto_btn.setToolTip("Probe CPU/RAM/GPU and fill in recommended settings")
+        auto_btn.clicked.connect(self._auto_detect)
+        layout.addWidget(auto_btn)
+
         apply_btn = QPushButton("Apply Settings")
         apply_btn.setObjectName("secondaryButton")
         apply_btn.setToolTip("Apply inference settings to the current session")
         apply_btn.clicked.connect(self._apply_settings)
         layout.addWidget(apply_btn)
 
-        # Save & Rebuild Modelfile + config.yaml
-        save_btn = QPushButton("Save && Rebuild Configs")
+        save_btn = QPushButton("💾  Save && Rebuild Configs")
         save_btn.setToolTip(
             "Regenerate Modelfile and config.yaml with current settings.\n"
             "You'll need to re-create the Ollama model for hardware changes to take effect."
@@ -271,50 +301,78 @@ class SettingsPanel(QFrame):
         layout.addStretch()
 
         # ── Model Info ──
-        info_label = QLabel(f"Model: {backend.get_model_tag()}")
-        info_label.setObjectName("mutedLabel")
-        info_label.setWordWrap(True)
-        layout.addWidget(info_label)
+        self.info_label = QLabel(f"Model: {backend.get_model_tag()}")
+        self.info_label.setWordWrap(True)
+        self.info_label.setStyleSheet(f"font-size: 11px; color: {COLORS['text_muted']};")
+        layout.addWidget(self.info_label)
 
-        # Load saved hardware settings from existing Modelfile
-        self._load_from_modelfile()
+        # Load saved settings from disk
+        self._load_from_configs()
 
-    def _load_from_modelfile(self):
-        """Read current hardware values from the existing Modelfile."""
-        modelfile_path = Path(self.backend.working_dir) / "Modelfile"
-        if not modelfile_path.exists():
-            return
+    def _load_from_configs(self):
+        """Read current settings from Modelfile + config.yaml via configs module."""
         try:
-            content = modelfile_path.read_text(encoding="utf-8")
+            cfg = load_full(Path(self.backend.working_dir))
 
-            ctx_m = re.search(r'PARAMETER\s+num_ctx\s+(\d+)', content)
-            if ctx_m:
-                val = ctx_m.group(1)
-                idx = self.ctx_combo.findText(val)
-                if idx >= 0:
-                    self.ctx_combo.setCurrentIndex(idx)
+            val = str(cfg.context_size)
+            idx = self.ctx_combo.findText(val)
+            if idx >= 0:
+                self.ctx_combo.setCurrentIndex(idx)
 
-            gpu_m = re.search(r'PARAMETER\s+num_gpu\s+(\d+)', content)
-            if gpu_m:
-                self.gpu_spin.setValue(int(gpu_m.group(1)))
+            self.gpu_spin.setValue(cfg.gpu_layers)
+            self.cpu_spin.setValue(cfg.cpu_threads)
 
-            cpu_m = re.search(r'PARAMETER\s+num_thread\s+(\d+)', content)
-            if cpu_m:
-                self.cpu_spin.setValue(int(cpu_m.group(1)))
+            val = str(cfg.batch_size)
+            idx = self.batch_combo.findText(val)
+            if idx >= 0:
+                self.batch_combo.setCurrentIndex(idx)
 
-            batch_m = re.search(r'PARAMETER\s+num_batch\s+(\d+)', content)
-            if batch_m:
-                val = batch_m.group(1)
-                idx = self.batch_combo.findText(val)
-                if idx >= 0:
-                    self.batch_combo.setCurrentIndex(idx)
+            self.temp_spin.setValue(cfg.temperature)
 
-            temp_m = re.search(r'PARAMETER\s+temperature\s+([\d.]+)', content)
-            if temp_m:
-                self.temp_spin.setValue(float(temp_m.group(1)))
+            idx = self.engine_combo.findText(cfg.engine_mode)
+            if idx >= 0:
+                self.engine_combo.setCurrentIndex(idx)
 
+            self.litellm_url_edit.setText(cfg.litellm_url)
+            self.litellm_key_edit.setText(cfg.litellm_api_key)
+            self.ollama_url_edit.setText(cfg.ollama_base_url)
         except Exception:
             pass
+
+    def _auto_detect(self):
+        """Probe hardware and fill in recommended settings."""
+        try:
+            hw = detect_hardware()
+            r = hw.recommendations
+
+            val = str(r.context_size)
+            idx = self.ctx_combo.findText(val)
+            if idx >= 0:
+                self.ctx_combo.setCurrentIndex(idx)
+
+            self.gpu_spin.setValue(r.gpu_layers)
+            self.cpu_spin.setValue(r.cpu_threads)
+
+            val = str(r.batch_size)
+            idx = self.batch_combo.findText(val)
+            if idx >= 0:
+                self.batch_combo.setCurrentIndex(idx)
+
+            idx = self.engine_combo.findText(r.engine_mode)
+            if idx >= 0:
+                self.engine_combo.setCurrentIndex(idx)
+
+            gpu_info = f" — {hw.gpu.name} ({hw.gpu.total_vram_gb:.1f} GB VRAM)" if hw.gpu else ""
+            QMessageBox.information(
+                self,
+                "Hardware Detected",
+                f"CPU: {hw.cpu_cores} cores\n"
+                f"RAM: {hw.ram_gb:.1f} GB\n"
+                f"GPU{gpu_info}\n\n"
+                f"Recommended settings applied!"
+            )
+        except Exception as e:
+            QMessageBox.warning(self, "Detection Failed", str(e))
 
     def _apply_settings(self):
         """Push current UI values into the backend for the running session."""
@@ -325,70 +383,37 @@ class SettingsPanel(QFrame):
         )
 
     def _save_and_rebuild(self):
-        """Regenerate Modelfile and config.yaml from current UI values."""
+        """Regenerate Modelfile and config.yaml using the configs module."""
         working_dir = Path(self.backend.working_dir)
-        model_tag = self.backend.get_model_tag()
 
         # Find GGUF file
         gguf_files = list(working_dir.glob("*.gguf"))
         if not gguf_files:
             QMessageBox.warning(self, "Error", "No .gguf file found in the model directory.")
             return
-        selected_gguf = gguf_files[0].name
 
-        context_size = int(self.ctx_combo.currentText())
-        gpu_layers = self.gpu_spin.value()
-        cpu_threads = self.cpu_spin.value()
-        batch_size = int(self.batch_combo.currentText())
-        temperature = self.temp_spin.value()
+        cfg = ModelConfig(
+            selected_gguf=gguf_files[0].name,
+            model_tag=self.backend.get_model_tag(),
+            engine_mode=self.engine_combo.currentText(),
+            context_size=int(self.ctx_combo.currentText()),
+            gpu_layers=self.gpu_spin.value(),
+            cpu_threads=self.cpu_spin.value(),
+            batch_size=int(self.batch_combo.currentText()),
+            temperature=self.temp_spin.value(),
+            max_tokens=int(self.max_tokens_combo.currentText()),
+            litellm_url=self.litellm_url_edit.text() or "http://127.0.0.1:4000",
+            litellm_api_key=self.litellm_key_edit.text() or "",
+            ollama_base_url=self.ollama_url_edit.text() or "http://127.0.0.1:11434",
+        )
 
-        # ── Write Modelfile ──
-        modelfile_content = textwrap.dedent(f"""\
-            FROM ./{selected_gguf}
+        try:
+            write_all(cfg, working_dir)
+        except ValueError as e:
+            QMessageBox.critical(self, "Save Failed", str(e))
+            return
 
-            # Hardware, RAM, and VRAM resource allocation
-            PARAMETER num_ctx {context_size}
-            PARAMETER num_gpu {gpu_layers}
-            PARAMETER num_thread {cpu_threads}
-            PARAMETER num_batch {batch_size}
-            PARAMETER temperature {temperature}
-
-            SYSTEM \"\"\"
-            You are a helpful, knowledgeable AI assistant. Answer clearly and concisely.
-            \"\"\"
-        """)
-
-        modelfile_path = working_dir / "Modelfile"
-        modelfile_path.write_text(modelfile_content, encoding="utf-8")
-
-        # ── Write config.yaml ──
-        config_content = textwrap.dedent(f"""\
-            model_list:
-              - model_name: {model_tag}
-                litellm_params:
-                  model: ollama_chat/{model_tag}
-                  api_base: http://127.0.0.1:11434
-                  num_ctx: {context_size}
-                  max_tokens: {int(self.max_tokens_combo.currentText())}
-              - model_name: "*"
-                litellm_params:
-                  model: ollama_chat/{model_tag}
-                  api_base: http://127.0.0.1:11434
-                  num_ctx: {context_size}
-                  max_tokens: {int(self.max_tokens_combo.currentText())}
-
-            litellm_settings:
-              drop_params: true
-              ignore_invalid_params: true
-              modify_params: true
-              force_timeout: 600
-              json_logs: false
-        """)
-
-        config_path = working_dir / "config.yaml"
-        config_path.write_text(config_content, encoding="utf-8")
-
-        # Apply to running session too
+        # Apply inference settings to the running session too
         self._apply_settings()
 
         QMessageBox.information(
@@ -409,11 +434,17 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Qwythos AI")
-        self.setMinimumSize(900, 650)
-        self.resize(1100, 750)
+        self.setMinimumSize(960, 680)
+        self.resize(1140, 780)
 
         # Backend
         self.backend = OllamaBackend(working_dir=SCRIPT_DIR)
+
+        # Pip-Boy visual layers (sit behind all content)
+        self._backdrop = CrackedBackdrop(self, seed=42, density=18)
+        self._backdrop.resize(self.size())
+        self._scanlines = ScanlineOverlay(self, spacing=3, alpha=20)
+        self._scanlines.resize(self.size())
 
         # Streaming state
         self._streaming_bubble: MessageBubble | None = None
@@ -493,6 +524,11 @@ class MainWindow(QMainWindow):
         self.settings_panel.setVisible(False)  # hidden by default
         main_layout.addWidget(self.settings_panel)
 
+        # Raise overlays so they sit above all child widgets
+        self._backdrop.raise_()
+        self._backdrop.lower()   # actually push it to the very back
+        self._scanlines.raise_() # scanlines float above backdrop but below content
+
         # ── Connect backend signals ──
         self.backend.ollama_status_changed.connect(self._on_ollama_status)
         self.backend.litellm_status_changed.connect(self._on_litellm_status)
@@ -506,6 +542,12 @@ class MainWindow(QMainWindow):
 
         # Apply stylesheet
         self.setStyleSheet(get_main_stylesheet())
+
+    def resizeEvent(self, event):
+        """Keep backdrop and scanlines full-window on resize."""
+        super().resizeEvent(event)
+        self._backdrop.resize(self.size())
+        self._scanlines.resize(self.size())
 
     # ── Build UI Components ───────────────────────────────────────────────────
 
@@ -599,56 +641,46 @@ class MainWindow(QMainWindow):
     def _build_status_bar(self) -> QFrame:
         bar = QFrame()
         bar.setObjectName("statusBar")
-        bar.setFixedHeight(32)
+        bar.setFixedHeight(36)
 
         layout = QHBoxLayout(bar)
         layout.setContentsMargins(16, 0, 16, 0)
-        layout.setSpacing(16)
+        layout.setSpacing(10)
 
-        # Ollama status
-        ollama_label = QLabel("Ollama")
-        ollama_label.setStyleSheet(
-            f"font-size: 11px; color: {COLORS['text_muted']}; background: transparent;"
-        )
-        layout.addWidget(ollama_label)
+        def _status_pair(label_text: str) -> tuple:
+            """Return (LED, caption_label) side-by-side."""
+            led = LEDDot("off", diameter=9)
+            cap = QLabel(label_text)
+            cap.setStyleSheet(
+                f"font-size: 10px; color: {COLORS['text_muted']};"
+                f" background: transparent; letter-spacing: 1px;"
+            )
+            return led, cap
 
-        self.ollama_pill = QLabel("checking…")
-        self.ollama_pill.setObjectName("statusPill")
-        self.ollama_pill.setStyleSheet(get_status_pill_style("loading"))
-        layout.addWidget(self.ollama_pill)
+        # Ollama
+        self.ollama_led, ol_cap = _status_pair("OLLAMA")
+        layout.addWidget(self.ollama_led)
+        layout.addWidget(ol_cap)
 
-        # LiteLLM status
-        litellm_label = QLabel("LiteLLM")
-        litellm_label.setStyleSheet(
-            f"font-size: 11px; color: {COLORS['text_muted']}; background: transparent;"
-        )
-        layout.addWidget(litellm_label)
+        # LiteLLM
+        self.litellm_led, ll_cap = _status_pair("LITELLM")
+        layout.addWidget(self.litellm_led)
+        layout.addWidget(ll_cap)
 
-        self.litellm_pill = QLabel("checking…")
-        self.litellm_pill.setObjectName("statusPill")
-        self.litellm_pill.setStyleSheet(get_status_pill_style("loading"))
-        layout.addWidget(self.litellm_pill)
-
-        # Model status
-        model_label = QLabel("Model")
-        model_label.setStyleSheet(
-            f"font-size: 11px; color: {COLORS['text_muted']}; background: transparent;"
-        )
-        layout.addWidget(model_label)
-
-        self.model_pill = QLabel("checking…")
-        self.model_pill.setObjectName("statusPill")
-        self.model_pill.setStyleSheet(get_status_pill_style("loading"))
-        layout.addWidget(self.model_pill)
+        # Model
+        self.model_led, ml_cap = _status_pair("MODEL")
+        layout.addWidget(self.model_led)
+        layout.addWidget(ml_cap)
 
         layout.addStretch()
 
-        # Generation stats
-        self.stats_label = QLabel("")
-        self.stats_label.setStyleSheet(
-            f"font-size: 11px; color: {COLORS['text_muted']}; background: transparent;"
-        )
-        layout.addWidget(self.stats_label)
+        # Token-rate bar meter
+        self.bar_meter = BarMeter(segments=14)
+        layout.addWidget(self.bar_meter)
+
+        # Hardware strip (decorative instrument cluster)
+        self.hw_strip = HardwareStrip()
+        layout.addWidget(self.hw_strip)
 
         return bar
 
@@ -668,10 +700,9 @@ class MainWindow(QMainWindow):
         wlayout.setAlignment(Qt.AlignCenter)
         wlayout.setSpacing(12)
 
-        icon = QLabel("✦")
-        icon.setAlignment(Qt.AlignCenter)
-        icon.setStyleSheet(f"font-size: 48px; color: {COLORS['accent']}; background: transparent;")
-        wlayout.addWidget(icon)
+        # Mascot glyph (original line-art from widgets.py)
+        mascot = MascotGlyph(size=96)
+        wlayout.addWidget(mascot, alignment=Qt.AlignHCenter)
 
         title = QLabel("Welcome to Qwythos AI")
         title.setAlignment(Qt.AlignCenter)
@@ -683,21 +714,20 @@ class MainWindow(QMainWindow):
 
         desc = QLabel(
             "Your local AI assistant running entirely on this computer.\n"
-            "No internet required • Complete privacy • Unlimited usage"
+            "No internet required  •  Complete privacy  •  Unlimited usage"
         )
         desc.setAlignment(Qt.AlignCenter)
         desc.setWordWrap(True)
         desc.setStyleSheet(
             f"font-size: 14px; color: {COLORS['text_secondary']}; background: transparent;"
-            f" line-height: 1.5;"
         )
         wlayout.addWidget(desc)
 
         hint = QLabel("Type a message below to get started →")
         hint.setAlignment(Qt.AlignCenter)
         hint.setStyleSheet(
-            f"font-size: 13px; color: {COLORS['text_muted']}; background: transparent;"
-            f" padding-top: 8px;"
+            f"font-size: 12px; color: {COLORS['text_muted']}; background: transparent;"
+            f" padding-top: 8px; letter-spacing: 1px;"
         )
         wlayout.addWidget(hint)
 
@@ -715,36 +745,39 @@ class MainWindow(QMainWindow):
 
     def _on_ollama_status(self, status: str):
         self._ollama_live = (status == "live")
-        if status == "live":
-            self.ollama_pill.setText("live")
-            self.ollama_pill.setStyleSheet(get_status_pill_style("live"))
-        else:
-            self.ollama_pill.setText("offline")
-            self.ollama_pill.setStyleSheet(get_status_pill_style("offline"))
+        self.ollama_led.set_state("green" if status == "live" else "red")
+        self._sync_hw_strip()
         self._update_banner()
 
     def _on_litellm_status(self, status: str):
         self._litellm_live = (status == "live")
-        if status == "live":
-            self.litellm_pill.setText("live")
-            self.litellm_pill.setStyleSheet(get_status_pill_style("live"))
-        else:
-            self.litellm_pill.setText("offline")
-            self.litellm_pill.setStyleSheet(get_status_pill_style("offline"))
+        self.litellm_led.set_state("green" if status == "live" else "amber")
+        self._sync_hw_strip()
         self._update_banner()
 
     def _on_model_status(self, status: str):
         self._model_ready = (status == "ready")
         if status == "ready":
-            self.model_pill.setText("ready")
-            self.model_pill.setStyleSheet(get_status_pill_style("live"))
+            self.model_led.set_state("green")
         elif status == "not_found":
-            self.model_pill.setText("not found")
-            self.model_pill.setStyleSheet(get_status_pill_style("offline"))
+            self.model_led.set_state("red")
         else:
-            self.model_pill.setText("unknown")
-            self.model_pill.setStyleSheet(get_status_pill_style("loading"))
+            self.model_led.set_state("amber")
+        self._sync_hw_strip()
         self._update_banner()
+
+    def _sync_hw_strip(self):
+        """Drive the decorative PWR / I/O / GPU LEDs on the hardware strip."""
+        pwr = "green" if self._ollama_live else "red"
+        io  = "green" if self._litellm_live else "off"
+        gpu = "green" if self._model_ready else ("amber" if self._ollama_live else "off")
+        self.hw_strip.set_lamps(pwr, io, gpu)
+        if self._model_ready:
+            self.hw_strip.set_plate("RDY")
+        elif self._ollama_live:
+            self.hw_strip.set_plate("INIT")
+        else:
+            self.hw_strip.set_plate("OFF")
 
     def _update_banner(self):
         """Show/hide the status banner based on service states."""
@@ -928,8 +961,9 @@ class MainWindow(QMainWindow):
     def _on_stats_update(self, stats: dict):
         """Update the generation speed indicator."""
         tps = stats.get("tokens_per_sec", 0)
-        total = stats.get("total_tokens", 0)
-        self.stats_label.setText(f"{tps} tok/s  •  {total} tokens")
+        # Drive the bar meter: scale 0–30 tok/s → 0.0–1.0
+        self.bar_meter.set_level(min(tps / 30.0, 1.0))
+        self.hw_strip.set_plate(f"{int(tps):3d}T")
 
     def _stop_generation(self):
         """Stop the current generation."""
