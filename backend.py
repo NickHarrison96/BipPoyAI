@@ -28,6 +28,7 @@ from urllib.parse import urlparse
 import requests
 
 import settings
+import netutil
 from configs import derive_model_tag
 
 
@@ -352,13 +353,11 @@ class StatusWorker(QThread):
         except Exception:
             pass
 
-        # Check LiteLLM — keep timeout short so background thread finishes promptly
-        try:
-            resp = requests.get(f"{self.litellm_base_url}/health", timeout=3)
-            if resp.status_code == 200:
-                litellm_status = "live"
-        except Exception:
-            pass
+        # Check LiteLLM — fast liveness probe (deep /health takes ~5.4s because
+        # it queries Ollama, which blew the old 3s timeout and left the LED
+        # stuck on "offline" while chat worked fine).
+        if netutil.litellm_healthy(self.litellm_base_url):
+            litellm_status = "live"
 
         self.status_ready.emit(ollama_status, litellm_status, model_status, model_names)
 
@@ -402,10 +401,44 @@ class LiteLLMStarter(QThread):
                 )
                 return
 
-            port = urlparse(self.litellm_url).port or 4000
-            self.progress_update.emit(f"Starting LiteLLM proxy on port {port}...")
+            def health_ok() -> bool:
+                return netutil.litellm_healthy(self.litellm_url)
 
-            cmd = ["litellm", "--config", self.config_path, "--port", str(port)]
+            port = urlparse(self.litellm_url).port or 4000
+            host = urlparse(self.litellm_url).hostname or "127.0.0.1"
+
+            if health_ok():
+                self.progress_update.emit("LiteLLM proxy is already running!")
+                self.started_ok.emit()
+                return
+
+            # Port busy but /health failing: LiteLLM 1.102+ would silently fall
+            # back to a RANDOM port if we spawned anyway. Poll in case a previous
+            # instance is still booting; otherwise report the conflict.
+            if netutil.port_in_use(port):
+                self.progress_update.emit(
+                    f"Port {port} is in use - polling existing instance..."
+                )
+                for _ in range(30):
+                    time.sleep(2)
+                    if health_ok():
+                        self.progress_update.emit("LiteLLM proxy is already running!")
+                        self.started_ok.emit()
+                        return
+                pid = netutil.pid_on_port(port)
+                self.started_error.emit(
+                    f"Port {port} is occupied by PID {pid or 'unknown'} "
+                    f"but not answering /health.\n\n"
+                    "Starting LiteLLM now would silently move it to a random port.\n"
+                    + (f"Kill it first:  taskkill /PID {pid} /F" if pid
+                       else f"Find the holder:  netstat -ano | findstr :{port}")
+                )
+                return
+
+            self.progress_update.emit(f"Starting LiteLLM proxy on {host}:{port}...")
+
+            cmd = ["litellm", "--config", self.config_path,
+                   "--host", host, "--port", str(port)]
 
             # Spawn in a separate console window on Windows
             if os.name == 'nt':
@@ -427,20 +460,24 @@ class LiteLLMStarter(QThread):
             self.progress_update.emit("Waiting for LiteLLM to initialize...")
             for attempt in range(60):  # up to ~2 minutes
                 time.sleep(2)
-                try:
-                    r = requests.get(f"{self.litellm_url}/health", timeout=10)
-                    if r.status_code == 200:
-                        self.progress_update.emit("LiteLLM proxy is live!")
-                        self.started_ok.emit()
-                        return
-                except Exception:
-                    pass
+                if health_ok():
+                    self.progress_update.emit("LiteLLM proxy is live!")
+                    self.started_ok.emit()
+                    return
 
-            # If we get here, it didn't start in time
-            self.started_error.emit(
-                "LiteLLM started but didn't respond within 2 minutes.\n"
-                "Check the LiteLLM console window for errors."
-            )
+            # Diagnose the failure instead of a generic timeout.
+            if netutil.pid_on_port(port) is None:
+                self.started_error.emit(
+                    f"Port {port} was never bound - LiteLLM likely fell back to a "
+                    f"random port (another process grabbed {port} during startup) "
+                    f"or crashed.\nCheck the LiteLLM console window for the port "
+                    f"it actually bound."
+                )
+            else:
+                self.started_error.emit(
+                    f"LiteLLM bound port {port} but /health did not answer within "
+                    f"2 minutes.\nCheck the LiteLLM console window for errors."
+                )
 
         except Exception as e:
             self.started_error.emit(f"Failed to start LiteLLM:\n{str(e)}")

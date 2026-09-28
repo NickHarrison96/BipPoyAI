@@ -16,10 +16,9 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
 
-import requests
-
 import configs
 import hardware
+import netutil
 import settings
 
 
@@ -163,6 +162,30 @@ def stage_build_ollama(working_dir: Path, cfg: configs.ModelConfig, auto: bool =
         error("Ollama CLI not in PATH. Install from https://ollama.com")
         die(1, pause=not auto)
 
+    # Parse the FROM source in the Modelfile; if it's a local file, it must exist.
+    modelfile_path = working_dir / "Modelfile"
+    if modelfile_path.exists():
+        from_line = next(
+            (l for l in modelfile_path.read_text(encoding="utf-8", errors="replace").splitlines()
+             if l.strip().upper().startswith("FROM ")), ""
+        )
+        from_src = from_line[5:].strip() if from_line else ""
+        if from_src.startswith((".", "/", "\\\\")) or ":" not in from_src:
+            src_path = (working_dir / from_src).resolve() if not Path(from_src).is_absolute() else Path(from_src)
+            if not src_path.exists():
+                error(f"Modelfile FROM source not found: {from_src}")
+                error("Ollama 0.34+ returns a misleading 'invalid model name' error for missing files.")
+                error("Place the .gguf file in the project directory, or edit Modelfile to point at a valid source.")
+                die(1, pause=not auto)
+
+    # If the tag already exists in Ollama, offer to skip the rebuild.
+    if not auto:
+        existing = subprocess.run(["ollama", "list"], capture_output=True, text=True)
+        if cfg.model_tag in existing.stdout:
+            if not ask(f"Model '{cfg.model_tag}' already exists in Ollama. Rebuild it?", default=False):
+                success(f"'{cfg.model_tag}' already registered — skipping build.")
+                return
+
     verbose(f"ollama create {cfg.model_tag} -f ./Modelfile")
     proc = subprocess.run(
         ["ollama", "create", cfg.model_tag, "-f", "./Modelfile"],
@@ -175,19 +198,36 @@ def stage_build_ollama(working_dir: Path, cfg: configs.ModelConfig, auto: bool =
 
 
 def is_litellm_running(url: str) -> bool:
-    """Check if LiteLLM proxy is alive and answering health checks."""
-    try:
-        r = requests.get(f"{url}/health", timeout=3)
-        return r.status_code == 200
-    except Exception:
-        return False
+    """Check if LiteLLM proxy is alive (fast liveness probe, deep /health fallback)."""
+    return netutil.litellm_healthy(url)
 
 
 def start_litellm_proxy(working_dir: Path, cfg: configs.ModelConfig) -> bool:
     """Start LiteLLM proxy if not already running."""
+    port = urlparse(cfg.litellm_url).port or 4000
+
     if is_litellm_running(cfg.litellm_url):
         success(f"LiteLLM proxy is already running at {cfg.litellm_url}")
         return True
+
+    # Port busy but /health failing: LiteLLM 1.102+ would silently fall back
+    # to a RANDOM port if we spawned anyway. Poll in case a previous instance
+    # is still booting; if it never answers, report the conflict instead.
+    if netutil.port_in_use(port):
+        verbose(f"Port {port} is in use - polling for an existing instance (60s)...")
+        for _ in range(30):
+            time.sleep(2)
+            if is_litellm_running(cfg.litellm_url):
+                success(f"LiteLLM proxy is already running at {cfg.litellm_url}")
+                return True
+        pid = netutil.pid_on_port(port)
+        error(f"Port {port} is occupied by PID {pid or 'unknown'} but not answering /health.")
+        error("Starting LiteLLM now would silently move it to a random port.")
+        if pid:
+            error(f"Kill it first:  taskkill /PID {pid} /F")
+        else:
+            error(f"Find the holder:  netstat -ano | findstr :{port}")
+        return False
 
     if not (working_dir / "config.yaml").exists():
         error("config.yaml missing. Generating config first...")
@@ -197,9 +237,10 @@ def start_litellm_proxy(working_dir: Path, cfg: configs.ModelConfig) -> bool:
         error("LiteLLM CLI not in PATH. Run: pip install litellm")
         return False
 
-    port = urlparse(cfg.litellm_url).port or 4000
-    verbose(f"Spawning LiteLLM proxy on port {port}...")
-    cmd = ["litellm", "--config", str(working_dir / "config.yaml"), "--port", str(port)]
+    host = urlparse(cfg.litellm_url).hostname or "127.0.0.1"
+    verbose(f"Spawning LiteLLM proxy on {host}:{port}...")
+    cmd = ["litellm", "--config", str(working_dir / "config.yaml"),
+           "--host", host, "--port", str(port)]
     if os.name == "nt":
         subprocess.Popen(cmd, cwd=str(working_dir),
                          creationflags=subprocess.CREATE_NEW_CONSOLE)
@@ -207,13 +248,21 @@ def start_litellm_proxy(working_dir: Path, cfg: configs.ModelConfig) -> bool:
         subprocess.Popen(cmd, cwd=str(working_dir))
 
     verbose("Waiting for LiteLLM to initialize...")
-    for _ in range(30):
+    for _ in range(45):
         time.sleep(2)
         if is_litellm_running(cfg.litellm_url):
             success(f"LiteLLM proxy is live at {cfg.litellm_url}")
             return True
 
-    warn("LiteLLM started but did not respond within 60s. Continuing anyway...")
+    # Diagnose the failure instead of continuing silently.
+    pid = netutil.pid_on_port(port)
+    if pid is None:
+        error(f"Port {port} was never bound - LiteLLM likely fell back to a random port")
+        error(f"(another process grabbed {port} during startup) or crashed.")
+        error("Check the LiteLLM console window for the port it actually bound.")
+    else:
+        error(f"LiteLLM bound port {port} (PID {pid}) but /health did not answer within 90s.")
+        error("Check the LiteLLM console window for errors.")
     return False
 
 
@@ -224,7 +273,9 @@ def stage_launch_stack(working_dir: Path, cfg: configs.ModelConfig, auto: bool =
         verbose("Skipped launcher.")
         return
 
-    start_litellm_proxy(working_dir, cfg)
+    if not start_litellm_proxy(working_dir, cfg):
+        error("LiteLLM proxy is not available - skipping Claude CLI launch.")
+        return
 
     # Set Anthropic spoofing environment variables for Claude CLI
     os.environ["ANTHROPIC_BASE_URL"] = cfg.litellm_url

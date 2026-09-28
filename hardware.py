@@ -10,8 +10,12 @@ from typing import Optional
 
 import psutil
 
+import warnings
+
 try:
-    import pynvml
+    with warnings.catch_warnings():
+        warnings.filterwarnings("ignore", category=FutureWarning)
+        import pynvml
     pynvml.nvmlInit()
     _HAS_NVML = True
 except Exception:

@@ -21,7 +21,7 @@ from PySide6.QtWidgets import (
     QMessageBox, QFileDialog, QCheckBox, QSystemTrayIcon, QMenu,
 )
 from PySide6.QtCore import Qt, QTimer, QSize
-from PySide6.QtGui import QKeyEvent, QShortcut, QKeySequence, QIcon, QPixmap, QPainter, QColor, QAction
+from PySide6.QtGui import QKeyEvent, QShortcut, QKeySequence, QIcon, QPixmap, QPainter, QColor, QPen, QAction
 
 from styles import get_main_stylesheet, COLORS
 from backend import OllamaBackend
