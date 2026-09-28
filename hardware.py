@@ -104,7 +104,8 @@ def _recommend(cpu_cores: int, ram_gb: float, gpu: Optional[GPUInfo],
     else:
         r.gpu_layers = 0
         r.context_size = max(8192, cpu_cores * 512)
-        r.cpu_threads = cpu_cores
+        # Allocate 3 cores / 6 threads for inference so the host OS & UI aren't starved
+        r.cpu_threads = min(6, max(2, cpu_cores // 2))
         r.batch_size = 256
 
     # RAM-driven ceiling

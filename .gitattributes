@@ -1,2 +1,8 @@
-# Auto detect text files and perform LF normalization
-* text=auto
+# Normalize line endings in the repo, check out native (CRLF on Windows)
+* text=auto eol=crlf
+
+# Binary files — never touch
+*.gguf binary
+*.png binary
+*.jpg binary
+*.ico binary

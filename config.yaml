@@ -3,13 +3,13 @@ model_list:
     litellm_params:
       model: ollama_chat/qwythos-9b-claude-mythos-5-1m-mtp-q4_k_m
       api_base: http://127.0.0.1:11434
-      num_ctx: 32768
+      num_ctx: 65536
       max_tokens: 8192
   - model_name: "*"
     litellm_params:
       model: ollama_chat/qwythos-9b-claude-mythos-5-1m-mtp-q4_k_m
       api_base: http://127.0.0.1:11434
-      num_ctx: 32768
+      num_ctx: 65536
       max_tokens: 8192
 
 litellm_settings:

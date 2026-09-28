@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Optional
 
 
+import settings
+
 VALID_ENGINE_MODES = ("direct", "litellm_standard", "litellm_chat")
 
 
@@ -27,12 +29,12 @@ class ModelConfig:
     temperature: float = 0.2
     max_tokens: int = 8192
 
-    # LiteLLM proxy addressing
-    litellm_url: str = "http://127.0.0.1:4000"
-    litellm_api_key: str = "sk-ant-api03-local-mock-key-for-ollama-bypass-000000000000000000"
+    # LiteLLM proxy addressing (defaults synced with settings.json)
+    litellm_url: str = field(default_factory=lambda: settings.load()["litellm_base_url"])
+    litellm_api_key: str = field(default_factory=lambda: settings.load()["litellm_api_key"])
 
     # Ollama addressing
-    ollama_base_url: str = "http://127.0.0.1:11434"
+    ollama_base_url: str = field(default_factory=lambda: settings.load()["ollama_base_url"])
 
     def with_updates(self, **kwargs) -> "ModelConfig":
         return replace(self, **kwargs)
@@ -73,9 +75,9 @@ def load_modelfile(path: Path) -> ModelConfig:
 
 
 def load_config_yaml(path: Path) -> dict:
-    """Extract engine_mode + model_tag from an existing config.yaml. Text-based
+    """Extract engine_mode + model_tag + api_base from an existing config.yaml. Text-based
     to avoid a PyYAML dependency for such a simple file."""
-    out = {"engine_mode": "litellm_chat", "model_tag": None}
+    out = {"engine_mode": "litellm_chat", "model_tag": None, "ollama_url": None}
     if not path.exists():
         return out
 
@@ -87,6 +89,10 @@ def load_config_yaml(path: Path) -> dict:
     tag_match = re.search(r'model_name:\s*([^\s]+)', content)
     if tag_match and tag_match.group(1) != '"*"' and tag_match.group(1) != "*":
         out["model_tag"] = tag_match.group(1)
+
+    url_match = re.search(r'api_base:\s*([^\s]+)', content)
+    if url_match:
+        out["ollama_url"] = url_match.group(1)
 
     if "ollama_chat/" in content:
         out["engine_mode"] = "litellm_chat"
@@ -106,6 +112,8 @@ def load_full(working_dir: Path) -> ModelConfig:
     if y["model_tag"]:
         cfg.model_tag = y["model_tag"]
     cfg.engine_mode = y["engine_mode"]
+    if y.get("ollama_url"):
+        cfg.ollama_base_url = y["ollama_url"]
 
     # If Modelfile didn't declare a GGUF, pick the first one on disk
     if not cfg.selected_gguf:

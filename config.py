@@ -3,15 +3,17 @@
 Interactive TUI for tuning the Modelfile + config.yaml.
 
 All the actual logic (hardware probe, file I/O) lives in hardware.py and
-configs.py so the GUI can share it. This module is just the menu.
+configs.py so the GUI and CLI share the exact same schema.
 """
 
+import argparse
 import os
 import sys
 from pathlib import Path
 
 import hardware
 import configs
+import settings
 
 # ─── ANSI helpers ─────────────────────────────────────────────────────────────
 
@@ -40,17 +42,87 @@ def _engine_label(mode: str) -> str:
     }.get(mode, mode)
 
 
+def print_hardware_summary(hw: hardware.HardwareReport):
+    print(f"\n{C_HEADER}=== Hardware Detection ==={C_RESET}")
+    print(f"CPU cores : {hw.cpu_cores}")
+    print(f"RAM       : {hw.ram_gb:.1f} GB")
+    if hw.gpu:
+        print(f"GPU       : {hw.gpu.name} ({hw.gpu.total_vram_gb:.1f} GB VRAM)")
+    else:
+        print("GPU       : none detected")
+    print(f"Ollama    : {'running' if hw.ollama_running else 'not detected'}\n")
+
+    r = hw.recommendations
+    print("Recommended Settings:")
+    print(f"  context_size = {r.context_size}")
+    print(f"  gpu_layers   = {r.gpu_layers}")
+    print(f"  cpu_threads  = {r.cpu_threads}")
+    print(f"  batch_size   = {r.batch_size}")
+    print(f"  engine_mode  = {r.engine_mode}\n")
+
+
+def auto_apply(working_dir: Path):
+    hw = hardware.detect()
+    cfg = configs.load_full(working_dir)
+    r = hw.recommendations
+
+    cfg = cfg.with_updates(
+        context_size=r.context_size,
+        gpu_layers=r.gpu_layers,
+        cpu_threads=r.cpu_threads,
+        batch_size=r.batch_size,
+        engine_mode=r.engine_mode,
+    )
+
+    configs.write_all(cfg, working_dir)
+    print(f"{C_GREEN}[OK] Applied hardware recommendations to Modelfile and config.yaml:{C_RESET}")
+    print(f"     Context: {cfg.context_size}, GPU Layers: {cfg.gpu_layers}, CPU Threads: {cfg.cpu_threads}, Batch: {cfg.batch_size}")
+
+
+def show_config(working_dir: Path):
+    hw = hardware.detect()
+    cfg = configs.load_full(working_dir)
+    conn = settings.load()
+
+    print_hardware_summary(hw)
+
+    print(f"{C_HEADER}=== Current Configuration ==={C_RESET}")
+    print(f"Target GGUF   : {cfg.selected_gguf or '(none)'}")
+    print(f"Model Tag     : {cfg.model_tag or '(none)'}")
+    print(f"Engine Mode   : {_engine_label(cfg.engine_mode)}")
+    print(f"Context Size  : {cfg.context_size} tokens")
+    print(f"GPU Layers    : {cfg.gpu_layers}")
+    print(f"CPU Threads   : {cfg.cpu_threads}")
+    print(f"Batch Size    : {cfg.batch_size}")
+    print(f"Temperature   : {cfg.temperature}")
+    print(f"Ollama URL    : {conn['ollama_base_url']}")
+    print(f"LiteLLM URL   : {conn['litellm_base_url']}")
+
+
 # ─── Main menu ────────────────────────────────────────────────────────────────
 
 def main():
-    working_dir = Path.cwd()
-    ggufs = list(working_dir.glob("*.gguf"))
+    parser = argparse.ArgumentParser(description="Qwythos AI Hardware Tuning TUI")
+    parser.add_argument("--auto", "-a", action="store_true", help="Auto-detect hardware, apply recommendations, and save immediately")
+    parser.add_argument("--show", action="store_true", help="Show current hardware and config without entering the interactive menu")
+    args = parser.parse_args()
 
+    working_dir = Path(__file__).parent.resolve()
+
+    if args.auto:
+        auto_apply(working_dir)
+        return
+
+    if args.show:
+        show_config(working_dir)
+        return
+
+    ggufs = list(working_dir.glob("*.gguf"))
     hw = hardware.detect()
     cfg = configs.load_full(working_dir)
 
-    # Fill in any unset fields from hardware recommendations
-    if cfg.context_size == 32768 and hw.recommendations.context_size != 32768:
+    # Fill in any unset fields from hardware recommendations if still on defaults
+    if cfg.context_size == configs.ModelConfig().context_size and hw.recommendations.context_size != cfg.context_size:
         cfg = cfg.with_updates(context_size=hw.recommendations.context_size)
 
     while True:
@@ -75,7 +147,11 @@ def main():
         print(f"{C_GREEN}S. Save Settings & Rebuild Modelfile/config.yaml{C_RESET}")
         print(f"Q. Quit\n")
 
-        choice = input("Select an option: ").strip().lower()
+        try:
+            choice = input("Select an option: ").strip().lower()
+        except (KeyboardInterrupt, EOFError):
+            print()
+            sys.exit(0)
 
         if choice == "1":
             if not ggufs:
@@ -140,23 +216,8 @@ def main():
                 pass
 
         elif choice == "r":
-            print(f"\n{C_HEADER}=== Hardware Detection ==={C_RESET}")
-            print(f"CPU cores : {hw.cpu_cores}")
-            print(f"RAM       : {hw.ram_gb:.1f} GB")
-            if hw.gpu:
-                print(f"GPU       : {hw.gpu.name} ({hw.gpu.total_vram_gb:.1f} GB VRAM)")
-            else:
-                print("GPU       : none detected")
-            print(f"Ollama    : {'running' if hw.ollama_running else 'not detected'}\n")
-
+            print_hardware_summary(hw)
             r = hw.recommendations
-            print("Recommended:")
-            print(f"  context_size = {r.context_size}")
-            print(f"  gpu_layers   = {r.gpu_layers}")
-            print(f"  cpu_threads  = {r.cpu_threads}")
-            print(f"  batch_size   = {r.batch_size}")
-            print(f"  engine_mode  = {r.engine_mode}\n")
-
             if input("Apply? (y/n): ").strip().lower() == "y":
                 cfg = cfg.with_updates(
                     context_size=r.context_size,

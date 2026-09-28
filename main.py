@@ -17,20 +17,21 @@ from pathlib import Path
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QTextEdit, QFrame, QScrollArea, QGroupBox, QLineEdit,
-    QFormLayout, QComboBox, QSpinBox, QDoubleSpinBox, QSizePolicy,
-    QMessageBox,
+    QFormLayout, QComboBox, QSpinBox, QDoubleSpinBox,
+    QMessageBox, QFileDialog, QCheckBox, QSystemTrayIcon, QMenu,
 )
-from PySide6.QtCore import Qt, QTimer, QSize, QEvent
-from PySide6.QtGui import QFont, QTextCursor, QKeyEvent
+from PySide6.QtCore import Qt, QTimer, QSize
+from PySide6.QtGui import QKeyEvent, QShortcut, QKeySequence, QIcon, QPixmap, QPainter, QColor, QAction
 
 from styles import get_main_stylesheet, COLORS
-from backend import OllamaBackend, derive_model_tag
+from backend import OllamaBackend
 from widgets import (
     CrackedBackdrop, ScanlineOverlay, LEDDot, HardwareStrip,
     BarMeter, MascotGlyph,
 )
 from configs import ModelConfig, load_full, write_all
 from hardware import detect as detect_hardware
+import history
 
 
 # ─── Resolve working directory (always relative to this script) ───────────────
@@ -89,6 +90,13 @@ def md_to_html(text: str) -> str:
     return html
 
 
+def estimate_tokens(text: str) -> int:
+    """Rough token count (~4 chars/token, standard heuristic for English)."""
+    if not text or not text.strip():
+        return 0
+    return max(1, (len(text) + 3) // 4)
+
+
 # ─── Custom chat input (Enter to send, Shift+Enter for newline) ──────────────
 
 class ChatInput(QTextEdit):
@@ -123,6 +131,7 @@ class MessageBubble(QFrame):
     def __init__(self, role: str, content: str, parent=None):
         super().__init__(parent)
         self.role = role
+        self._raw_content = content
         self.setObjectName("messageBubble")
 
         layout = QVBoxLayout(self)
@@ -171,12 +180,52 @@ class MessageBubble(QFrame):
         layout.addWidget(role_label)
         layout.addWidget(self.content_label)
 
+        # ── Footer: token count + copy button (assistant only) ──
+        footer = QHBoxLayout()
+        footer.setSpacing(8)
+
+        self.token_label = QLabel()
+        self.token_label.setStyleSheet(
+            f"font-size: 10px; color: {COLORS['text_muted']}; background: transparent;"
+        )
+        footer.addWidget(self.token_label)
+
+        if role == "assistant":
+            self.copy_btn = QPushButton("📋 Copy")
+            self.copy_btn.setFixedHeight(22)
+            self.copy_btn.setStyleSheet(
+                f"font-size: 10px; padding: 2px 8px; border-radius: 4px;"
+                f" background: transparent; border: 1px solid {COLORS['divider']};"
+                f" color: {COLORS['text_muted']};"
+            )
+            self.copy_btn.setCursor(Qt.PointingHandCursor)
+            self.copy_btn.clicked.connect(self._copy_content)
+            footer.addWidget(self.copy_btn)
+
+        footer.addStretch()
+        layout.addLayout(footer)
+
+        # Set initial token count
+        self._update_token_count(content)
+
+    def _update_token_count(self, content: str):
+        n = estimate_tokens(content)
+        self.token_label.setText(f"~{n} token{'s' if n != 1 else ''}")
+
+    def _copy_content(self):
+        """Copy the raw message content to the system clipboard."""
+        QApplication.clipboard().setText(self._raw_content)
+        self.copy_btn.setText("✓ Copied")
+        QTimer.singleShot(1500, lambda: self.copy_btn.setText("📋 Copy"))
+
     def update_content(self, content: str):
         """Update the displayed content (used during streaming)."""
+        self._raw_content = content
         if self.role == "user":
             self.content_label.setText(content.replace("\n", "<br>"))
         else:
             self.content_label.setText(md_to_html(content))
+        self._update_token_count(content)
 
 
 # ─── Settings Panel ──────────────────────────────────────────────────────────
@@ -198,6 +247,35 @@ class SettingsPanel(QFrame):
         title = QLabel("⚙  Settings")
         title.setStyleSheet(f"font-size: 17px; font-weight: 700; color: {COLORS['text_primary']};")
         layout.addWidget(title)
+
+        # ── Model & Persona ──
+        session_group = QGroupBox("Model & Persona")
+        session_layout = QFormLayout(session_group)
+        session_layout.setSpacing(8)
+        session_layout.setContentsMargins(12, 20, 12, 12)
+
+        self.model_combo = QComboBox()
+        self.model_combo.setEditable(True)
+        self.model_combo.addItem(backend.get_model_tag())
+        self.model_combo.currentTextChanged.connect(self._on_model_changed)
+        session_layout.addRow("Active Model:", self.model_combo)
+
+        # Multi-GGUF selector — lists all .gguf files in the project directory
+        self.gguf_combo = QComboBox()
+        self.gguf_combo.currentTextChanged.connect(self._on_gguf_changed)
+        session_layout.addRow("GGUF File:", self.gguf_combo)
+        self._refresh_gguf_list()
+
+        self.system_prompt_edit = QTextEdit()
+        self.system_prompt_edit.setFixedHeight(70)
+        self.system_prompt_edit.setPlaceholderText("Custom system prompt instructions...")
+        self.system_prompt_edit.setText(backend.get_system_prompt())
+        session_layout.addRow("System Prompt:", self.system_prompt_edit)
+
+        layout.addWidget(session_group)
+
+        # Connect live model list updates from Ollama backend
+        self.backend.model_list_updated.connect(self._on_model_list_updated)
 
         # ── Inference Settings ──
         inf_group = QGroupBox("Inference")
@@ -276,6 +354,10 @@ class SettingsPanel(QFrame):
         self.ollama_url_edit.setPlaceholderText("http://127.0.0.1:11434")
         conn_layout.addRow("Ollama URL:", self.ollama_url_edit)
 
+        self.auto_litellm_check = QCheckBox("Auto-start LiteLLM on launch")
+        self.auto_litellm_check.setToolTip("Automatically start the LiteLLM proxy when the app opens")
+        conn_layout.addRow("", self.auto_litellm_check)
+
         layout.addWidget(conn_group)
 
         # ── Actions ──
@@ -309,6 +391,64 @@ class SettingsPanel(QFrame):
         # Load saved settings from disk
         self._load_from_configs()
 
+    def _refresh_gguf_list(self):
+        """Populate the GGUF selector with all .gguf files in the project directory."""
+        working_dir = Path(self.backend.working_dir)
+        ggufs = sorted(f.name for f in working_dir.glob("*.gguf"))
+        current_cfg = load_full(working_dir)
+
+        self.gguf_combo.blockSignals(True)
+        self.gguf_combo.clear()
+        if not ggufs:
+            self.gguf_combo.addItem("(no .gguf files found)")
+        else:
+            self.gguf_combo.addItems(ggufs)
+            if current_cfg.selected_gguf and current_cfg.selected_gguf in ggufs:
+                self.gguf_combo.setCurrentText(current_cfg.selected_gguf)
+        self.gguf_combo.blockSignals(False)
+
+    def _on_gguf_changed(self, filename: str):
+        """Switch to a different GGUF: derive tag, rebuild configs, hot-swap backend."""
+        if not filename or filename.startswith("("):
+            return
+        working_dir = Path(self.backend.working_dir)
+
+        from configs import derive_model_tag
+        new_tag = derive_model_tag(filename)
+
+        cfg = load_full(working_dir)
+        cfg = cfg.with_updates(selected_gguf=filename, model_tag=new_tag)
+        try:
+            write_all(cfg, working_dir)
+        except ValueError as e:
+            QMessageBox.warning(self, "Switch Failed", str(e))
+            return
+
+        self.backend.set_model_tag(new_tag)
+        self.model_combo.setCurrentText(new_tag)
+        self.info_label.setText(f"Model: {new_tag}")
+
+    def _on_model_list_updated(self, models: list):
+        """Update model switcher dropdown when Ollama reports installed models."""
+        if not models:
+            return
+        current = self.model_combo.currentText().strip()
+        self.model_combo.blockSignals(True)
+        self.model_combo.clear()
+        for m in models:
+            self.model_combo.addItem(m)
+        if current and self.model_combo.findText(current) < 0:
+            self.model_combo.addItem(current)
+        self.model_combo.setCurrentText(current or self.backend.get_model_tag())
+        self.model_combo.blockSignals(False)
+
+    def _on_model_changed(self, tag: str):
+        """Handle model tag selection change."""
+        tag = tag.strip()
+        if tag:
+            self.backend.set_model_tag(tag)
+            self.info_label.setText(f"Model: {tag}")
+
     def _load_from_configs(self):
         """Read current settings from Modelfile + config.yaml via configs module."""
         try:
@@ -333,11 +473,24 @@ class SettingsPanel(QFrame):
             if idx >= 0:
                 self.engine_combo.setCurrentIndex(idx)
 
-            self.litellm_url_edit.setText(cfg.litellm_url)
-            self.litellm_key_edit.setText(cfg.litellm_api_key)
-            self.ollama_url_edit.setText(cfg.ollama_base_url)
-        except Exception:
-            pass
+            if cfg.model_tag:
+                self.model_combo.setCurrentText(cfg.model_tag)
+                self.info_label.setText(f"Model: {cfg.model_tag}")
+
+            self.system_prompt_edit.setText(self.backend.get_system_prompt())
+
+            # Connection endpoints live in settings.json, not Modelfile/config.yaml
+            conn = self.backend.get_urls()
+            self.litellm_url_edit.setText(conn["litellm_base_url"])
+            self.litellm_key_edit.setText(conn["litellm_api_key"])
+            self.ollama_url_edit.setText(conn["ollama_base_url"])
+
+            import settings as app_settings
+            self.auto_litellm_check.setChecked(
+                app_settings.load().get("auto_start_litellm", "false") == "true"
+            )
+        except Exception as e:
+            print(f"[SettingsPanel] Failed to load configs: {e}")
 
     def _auto_detect(self):
         """Probe hardware and fill in recommended settings."""
@@ -380,7 +533,26 @@ class SettingsPanel(QFrame):
             temperature=self.temp_spin.value(),
             num_ctx=int(self.ctx_combo.currentText()),
             max_tokens=int(self.max_tokens_combo.currentText()),
+            engine_mode=self.engine_combo.currentText(),
         )
+        tag = self.model_combo.currentText().strip()
+        if tag:
+            self.backend.set_model_tag(tag)
+        self.backend.set_system_prompt(self.system_prompt_edit.toPlainText().strip())
+        self.info_label.setText(f"Model: {self.backend.get_model_tag()}")
+
+        # Endpoints hot-swap immediately — no restart required
+        self.backend.update_urls(
+            ollama_base_url=self.ollama_url_edit.text(),
+            litellm_base_url=self.litellm_url_edit.text(),
+            litellm_api_key=self.litellm_key_edit.text(),
+        )
+
+        # Persist auto-start preference
+        import settings as app_settings
+        app_settings.save({
+            "auto_start_litellm": "true" if self.auto_litellm_check.isChecked() else "false",
+        })
 
     def _save_and_rebuild(self):
         """Regenerate Modelfile and config.yaml using the configs module."""
@@ -392,9 +564,11 @@ class SettingsPanel(QFrame):
             QMessageBox.warning(self, "Error", "No .gguf file found in the model directory.")
             return
 
+        model_tag = self.model_combo.currentText().strip() or self.backend.get_model_tag()
+
         cfg = ModelConfig(
             selected_gguf=gguf_files[0].name,
-            model_tag=self.backend.get_model_tag(),
+            model_tag=model_tag,
             engine_mode=self.engine_combo.currentText(),
             context_size=int(self.ctx_combo.currentText()),
             gpu_layers=self.gpu_spin.value(),
@@ -449,6 +623,9 @@ class MainWindow(QMainWindow):
         # Streaming state
         self._streaming_bubble: MessageBubble | None = None
         self._streaming_text = ""
+
+        # Auto-scroll: follow output only while the user is at the bottom
+        self._auto_scroll = True
 
         # ── Central Widget ──
         central = QWidget()
@@ -509,6 +686,9 @@ class MainWindow(QMainWindow):
         self.scroll_area.setWidget(self.messages_container)
         chat_layout.addWidget(self.scroll_area, 1)
 
+        # Track user scroll position for auto-scroll behavior
+        self.scroll_area.verticalScrollBar().valueChanged.connect(self._on_scroll_changed)
+
         # Input area
         input_area = self._build_input_area()
         chat_layout.addWidget(input_area)
@@ -524,10 +704,9 @@ class MainWindow(QMainWindow):
         self.settings_panel.setVisible(False)  # hidden by default
         main_layout.addWidget(self.settings_panel)
 
-        # Raise overlays so they sit above all child widgets
-        self._backdrop.raise_()
-        self._backdrop.lower()   # actually push it to the very back
-        self._scanlines.raise_() # scanlines float above backdrop but below content
+        # Push backdrop to the very back, scanlines float above it but below content
+        self._backdrop.lower()
+        self._scanlines.raise_()
 
         # ── Connect backend signals ──
         self.backend.ollama_status_changed.connect(self._on_ollama_status)
@@ -542,6 +721,78 @@ class MainWindow(QMainWindow):
 
         # Apply stylesheet
         self.setStyleSheet(get_main_stylesheet())
+
+        # ── Keyboard shortcuts ──
+        QShortcut(QKeySequence("Ctrl+L"), self, self._clear_chat)
+        QShortcut(QKeySequence("Ctrl+N"), self, self._clear_chat)
+        QShortcut(QKeySequence("Ctrl+S"), self, self._save_conversation)
+
+        # ── Auto-start LiteLLM on launch (if enabled) ──
+        QTimer.singleShot(1500, self._maybe_autostart_litellm)
+
+        # ── System tray ──
+        self._setup_tray()
+
+    def _make_tray_icon(self) -> QIcon:
+        """Generate a simple amber-on-green Pip-Boy tray icon at runtime."""
+        pm = QPixmap(64, 64)
+        pm.fill(QColor("#16241c"))
+        p = QPainter(pm)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        # outer ring
+        p.setPen(QPen(QColor("#c9a961"), 4))
+        p.drawEllipse(6, 6, 52, 52)
+        # inner dot
+        p.setBrush(QColor("#ffd98a"))
+        p.setPen(Qt.NoPen)
+        p.drawEllipse(22, 22, 20, 20)
+        p.end()
+        return QIcon(pm)
+
+    def _setup_tray(self):
+        """Create the system tray icon with Show/Hide and Quit actions."""
+        if not QSystemTrayIcon.isSystemTrayAvailable():
+            self._tray = None
+            return
+
+        self._tray = QSystemTrayIcon(self._make_tray_icon(), self)
+        self._tray.setToolTip("Qwythos AI")
+
+        menu = QMenu()
+        show_action = QAction("Show / Hide", self)
+        show_action.triggered.connect(self._toggle_visibility)
+        menu.addAction(show_action)
+        menu.addSeparator()
+        quit_action = QAction("Quit", self)
+        quit_action.triggered.connect(QApplication.quit)
+        menu.addAction(quit_action)
+        self._tray.setContextMenu(menu)
+        self._tray.activated.connect(self._on_tray_activated)
+        self._tray.show()
+
+    def _on_tray_activated(self, reason):
+        if reason == QSystemTrayIcon.Trigger:
+            self._toggle_visibility()
+
+    def _toggle_visibility(self):
+        if self.isVisible() and not self.isMinimized():
+            self.hide()
+        else:
+            self.showNormal()
+            self.raise_()
+            self.activateWindow()
+
+    def closeEvent(self, event):
+        """Minimize to tray instead of closing (unless tray is unavailable)."""
+        if self._tray and self._tray.isVisible():
+            event.ignore()
+            self.hide()
+            self._tray.showMessage(
+                "Qwythos AI", "Still running in the system tray.",
+                QSystemTrayIcon.Information, 2000,
+            )
+        else:
+            event.accept()
 
     def resizeEvent(self, event):
         """Keep backdrop and scanlines full-window on resize."""
@@ -583,12 +834,36 @@ class MainWindow(QMainWindow):
 
         layout.addStretch()
 
+        # Load session button
+        load_btn = QPushButton("📂  Load")
+        load_btn.setObjectName("secondaryButton")
+        load_btn.setFixedHeight(32)
+        load_btn.setToolTip("Load a previously saved conversation")
+        load_btn.clicked.connect(self._load_session)
+        layout.addWidget(load_btn)
+
+        # Save session button
+        save_btn = QPushButton("💾  Save")
+        save_btn.setObjectName("secondaryButton")
+        save_btn.setFixedHeight(32)
+        save_btn.setToolTip("Save the current conversation (Ctrl+S exports to file)")
+        save_btn.clicked.connect(self._save_session)
+        layout.addWidget(save_btn)
+
         # Clear chat button
         clear_btn = QPushButton("🗑  Clear")
         clear_btn.setObjectName("secondaryButton")
         clear_btn.setFixedHeight(32)
         clear_btn.clicked.connect(self._clear_chat)
         layout.addWidget(clear_btn)
+
+        # Claude CLI launcher
+        claude_btn = QPushButton("⚡  Claude CLI")
+        claude_btn.setObjectName("secondaryButton")
+        claude_btn.setFixedHeight(32)
+        claude_btn.setToolTip("Launch the Claude CLI in a new terminal, routed through LiteLLM → Ollama")
+        claude_btn.clicked.connect(self._launch_claude_cli)
+        layout.addWidget(claude_btn)
 
         # Settings toggle
         self.settings_btn = QPushButton("⚙  Settings")
@@ -631,7 +906,7 @@ class MainWindow(QMainWindow):
         self.stop_btn.setObjectName("stopButton")
         self.stop_btn.setFixedSize(100, 36)
         self.stop_btn.clicked.connect(self._stop_generation)
-        self.stop_btn.setVisible(False)
+        self.stop_btn.setEnabled(False)  # always visible, disabled when idle
         btn_layout.addWidget(self.stop_btn)
 
         layout.addWidget(btn_container)
@@ -768,8 +1043,9 @@ class MainWindow(QMainWindow):
 
     def _sync_hw_strip(self):
         """Drive the decorative PWR / I/O / GPU LEDs on the hardware strip."""
+        is_direct = self.backend.get_engine_mode() == "direct"
         pwr = "green" if self._ollama_live else "red"
-        io  = "green" if self._litellm_live else "off"
+        io  = "green" if (self._litellm_live or (is_direct and self._ollama_live)) else "off"
         gpu = "green" if self._model_ready else ("amber" if self._ollama_live else "off")
         self.hw_strip.set_lamps(pwr, io, gpu)
         if self._model_ready:
@@ -789,6 +1065,8 @@ class MainWindow(QMainWindow):
                 pass
             self._banner_connected = False
 
+        is_direct = self.backend.get_engine_mode() == "direct"
+
         if not self._ollama_live:
             self.banner_label.setText(
                 "⚠  Ollama is not running. Start Ollama to use the model."
@@ -806,7 +1084,7 @@ class MainWindow(QMainWindow):
             self._banner_connected = True
             self.status_banner.setVisible(True)
             self.send_btn.setEnabled(False)
-        elif not self._litellm_live:
+        elif not is_direct and not self._litellm_live:
             self.banner_label.setText(
                 "⚠  LiteLLM proxy is offline. The model needs LiteLLM to route requests."
             )
@@ -821,6 +1099,59 @@ class MainWindow(QMainWindow):
             self.send_btn.setEnabled(True)
 
     # ── Actions ───────────────────────────────────────────────────────────────
+
+    def _maybe_autostart_litellm(self):
+        """Start LiteLLM automatically on launch if the user enabled it."""
+        import settings as app_settings
+        if app_settings.load().get("auto_start_litellm", "false") != "true":
+            return
+        if self._litellm_live:
+            return
+        if self.backend.get_engine_mode() == "direct":
+            return  # direct mode doesn't need LiteLLM
+
+        self._start_litellm()
+
+    def _launch_claude_cli(self):
+        """Spawn the Claude CLI in a new console, spoofed to route through LiteLLM → Ollama."""
+        import shutil as _shutil
+        if not _shutil.which("claude"):
+            QMessageBox.warning(
+                self, "Claude CLI Not Found",
+                "The 'claude' command is not in your PATH.\n\n"
+                "Install Claude Code with:\n"
+                "    npm install -g @anthropic-ai/claude-code"
+            )
+            return
+
+        if self.backend.get_engine_mode() != "direct" and not self._litellm_live:
+            QMessageBox.warning(
+                self, "LiteLLM Offline",
+                "Claude CLI needs LiteLLM to route requests.\n"
+                "Start LiteLLM first (click 'Fix' in the status banner)."
+            )
+            return
+
+        import subprocess as _subprocess
+        env = os.environ.copy()
+        env["ANTHROPIC_BASE_URL"] = self.backend.litellm_base_url
+        env["ANTHROPIC_AUTH_TOKEN"] = "ollama"
+        env["ANTHROPIC_API_KEY"] = self.backend.litellm_api_key
+
+        model = self.backend.get_model_tag()
+        try:
+            if os.name == "nt":
+                _subprocess.Popen(
+                    ["cmd", "/c", "start", "cmd", "/k", f"claude --model {model}"],
+                    env=env, cwd=SCRIPT_DIR,
+                )
+            else:
+                _subprocess.Popen(
+                    ["x-terminal-emulator", "-e", "claude", "--model", model],
+                    env=env, cwd=SCRIPT_DIR,
+                )
+        except OSError as e:
+            QMessageBox.critical(self, "Launch Failed", str(e))
 
     def _install_model(self):
         """Create the model in Ollama from the Modelfile."""
@@ -898,9 +1229,9 @@ class MainWindow(QMainWindow):
         # Scroll to bottom
         QTimer.singleShot(50, self._scroll_to_bottom)
 
-        # Toggle buttons
-        self.send_btn.setVisible(False)
-        self.stop_btn.setVisible(True)
+        # Toggle buttons — Stop always visible, just enable/disable
+        self.send_btn.setEnabled(False)
+        self.stop_btn.setEnabled(True)
         self.chat_input.setEnabled(False)
 
         # Start generation
@@ -922,6 +1253,9 @@ class MainWindow(QMainWindow):
         """Handle generation completion."""
         self.backend.finalize_response(full_response)
 
+        # Auto-save the conversation (rolling backup)
+        history.auto_save(self.backend.conversation)
+
         # Final render
         if self._streaming_bubble:
             self._streaming_bubble.update_content(full_response)
@@ -930,8 +1264,8 @@ class MainWindow(QMainWindow):
         self._streaming_text = ""
 
         # Restore buttons
-        self.send_btn.setVisible(True)
-        self.stop_btn.setVisible(False)
+        self.send_btn.setEnabled(True)
+        self.stop_btn.setEnabled(False)
         self.chat_input.setEnabled(True)
         self.chat_input.setFocus()
 
@@ -953,8 +1287,8 @@ class MainWindow(QMainWindow):
         self._streaming_bubble = None
         self._streaming_text = ""
 
-        self.send_btn.setVisible(True)
-        self.stop_btn.setVisible(False)
+        self.send_btn.setEnabled(True)
+        self.stop_btn.setEnabled(False)
         self.chat_input.setEnabled(True)
         self.chat_input.setFocus()
 
@@ -981,7 +1315,8 @@ class MainWindow(QMainWindow):
         self.backend.clear_conversation()
         self._streaming_bubble = None
         self._streaming_text = ""
-        self.stats_label.setText("")
+        self.bar_meter.set_level(0.0)
+        self.hw_strip.set_plate("OFF")
 
         # Re-add welcome
         self._add_welcome_message()
@@ -991,8 +1326,108 @@ class MainWindow(QMainWindow):
         visible = self.settings_panel.isVisible()
         self.settings_panel.setVisible(not visible)
 
+    def _on_scroll_changed(self, value: int):
+        """Re-enable auto-scroll when the user returns to the bottom."""
+        sb = self.scroll_area.verticalScrollBar()
+        if value >= sb.maximum() - 40:
+            self._auto_scroll = True
+        else:
+            self._auto_scroll = False
+
+    def _save_conversation(self):
+        """Export the current conversation to a Markdown file."""
+        if not self.backend.conversation:
+            QMessageBox.information(self, "Nothing to Save", "The conversation is empty.")
+            return
+
+        default_name = Path.home() / "qwythos_conversation.md"
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save Conversation", str(default_name),
+            "Markdown (*.md);;Text Files (*.txt);;All Files (*)",
+        )
+        if not path:
+            return
+
+        lines = ["# Qwythos AI Conversation", ""]
+        for msg in self.backend.conversation:
+            role = "**You**" if msg["role"] == "user" else "**Qwythos**"
+            lines.append(role)
+            lines.append("")
+            lines.append(msg["content"])
+            lines.append("")
+
+        try:
+            Path(path).write_text("\n".join(lines), encoding="utf-8")
+            QMessageBox.information(self, "Saved", f"Conversation saved to:\n{path}")
+        except OSError as e:
+            QMessageBox.critical(self, "Save Failed", str(e))
+
+    def _save_session(self):
+        """Save the current conversation as a named history session."""
+        if not self.backend.conversation:
+            QMessageBox.information(self, "Nothing to Save", "The conversation is empty.")
+            return
+        from PySide6.QtWidgets import QInputDialog
+        name, ok = QInputDialog.getText(
+            self, "Save Session", "Session name (blank = timestamp):"
+        )
+        if not ok:
+            return
+        try:
+            path = history.save_session(self.backend.conversation, name.strip() or None)
+            QMessageBox.information(self, "Saved", f"Session saved to:\n{path}")
+        except OSError as e:
+            QMessageBox.critical(self, "Save Failed", str(e))
+
+    def _load_session(self):
+        """Pick a saved session and restore it into the chat."""
+        sessions = history.list_sessions()
+        if not sessions:
+            auto = history.load_auto_save()
+            if auto:
+                reply = QMessageBox.question(
+                    self, "Restore Session",
+                    "No named sessions found. Restore the auto-saved conversation?",
+                )
+                if reply == QMessageBox.Yes:
+                    self._restore_conversation(auto)
+                return
+            QMessageBox.information(self, "No Sessions", "No saved sessions found.")
+            return
+
+        items = [f"{s['name']}  ({s['message_count']} msgs)" for s in sessions]
+        item, ok = QInputDialog.getItem(self, "Load Session", "Session:", items, 0, False)
+        if ok and item:
+            idx = items.index(item)
+            messages = history.load_session(sessions[idx]["path"])
+            if messages:
+                self._restore_conversation(messages)
+
+    def _restore_conversation(self, messages: list):
+        """Replace the current chat with messages loaded from history."""
+        while self.messages_layout.count():
+            item = self.messages_layout.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.deleteLater()
+
+        self._remove_welcome()
+        self.backend.conversation = list(messages)
+
+        for msg in messages:
+            if msg.get("role") == "system":
+                continue
+            bubble = MessageBubble(msg.get("role", "assistant"), msg.get("content", ""))
+            self.messages_layout.addWidget(bubble)
+
+        self._streaming_bubble = None
+        self._streaming_text = ""
+        QTimer.singleShot(50, self._scroll_to_bottom)
+
     def _scroll_to_bottom(self):
-        """Scroll the chat view to the bottom."""
+        """Scroll the chat view to the bottom (only if auto-scroll is on)."""
+        if not self._auto_scroll:
+            return
         sb = self.scroll_area.verticalScrollBar()
         sb.setValue(sb.maximum())
 

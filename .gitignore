@@ -28,5 +28,15 @@ desktop.ini
 # Ollama
 *.ollama
 
+# Model weights (large binary files — never commit)
+*.gguf
+
 # Logs
 *.log
+
+# Claude Code local settings
+.claude/settings.local.json
+
+# Scratch / temp files
+.routing_mode
+scratchpad.md

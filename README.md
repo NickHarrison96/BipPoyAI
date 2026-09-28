@@ -2,54 +2,103 @@
 
 <img width="1102" height="791" alt="image" src="https://github.com/user-attachments/assets/d93d6ea7-7bd6-4b84-a2e7-0ab8a8e74e9e" />
 
+---
+
+# Qwythos AI (BipPoyAI) — Local Offline AI Assistant
+
+A local-only desktop AI assistant for Windows running on top of Ollama and LiteLLM, featuring an amber/green Pip-Boy themed GUI and seamless routing to Anthropic's Claude CLI.
+
+```
+User (Claude CLI or GUI chat)
+        │
+        ▼
+  LiteLLM Proxy  :4000
+  ← spoofs the Anthropic API so `claude` CLI works offline without any internet
+        │
+        ▼
+  Ollama  :11434
+  ← hosts the GGUF model (Qwythos-9B-Claude-Mythos-5-1M-MTP-Q4_K_M)
+        │
+        ▼
+  Qwythos-9B.gguf  (≈5.8 GB, local file)
+```
+
+## Features
+
+- **Pip-Boy Aesthetic Desktop GUI**: Standalone PySide6 app with CRT scanlines, cracked glass backdrop, LED indicators, and hardware dials.
+- **Claude CLI Offline Spoofing**: Directs `claude` CLI requests through a local LiteLLM proxy into Ollama with zero internet connection needed.
+- **Automated Hardware Profiling**: Real-time detection of CPU threads, RAM, and GPU VRAM with tailored context and offloading recommendations.
+- **Flexible Tuning**: Tune context size, GPU layer offloading, thread count, batch size, and temperature via the GUI settings panel or terminal TUI.
 
 ---
 
-
-# Qwythos-9B Claude Model — Local Windows Setup
-
-This folder contains everything you need to run the Qwythos-9B Claude model locally on Windows, using Ollama and LiteLLM to route it to the Claude CLI.
-
-## What you get
-
-- An interactive config tool (`config.py`) to tune context size, GPU offload, CPU threads, batch size, and temperature
-- An automation script (`setup.py`) that builds the Ollama model and launches the LiteLLM proxy
-- A generated Modelfile and config.yaml ready for Ollama
-
 ## Prerequisites
-- `Qwythos-9B-Claude-Mythos-5-1M-MTP-Q4_K_M.gguf` — the model weights (about 5.8 GB) huggingface DL: https://huggingface.co/empero-ai/Qwythos-9B-Claude-Mythos-5-1M
-- Windows 10/11 (64-bit)
-- Python 3.11+ installed (add Python to your PATH if you haven't)
-- Ollama installed and running (`ollama serve`) — download from https://ollama.com
-- Claude CLI installed (`pip install claude-code` or use the official installer)
-- At least 8 GB RAM recommended; more is better for GPU offload
 
-## Quick start (for non-technical users)
+- **Python 3.11+** (ensure "Add python.exe to PATH" is checked)
+- **Ollama** installed and running (`ollama serve`) — https://ollama.com
+- **Model weights**: `Qwythos-9B-Claude-Mythos-5-1M-MTP-Q4_K_M.gguf` (approx 5.8 GB)
+  Download: https://huggingface.co/empero-ai/Qwythos-9B-Claude-Mythos-5-1M
+- *(Optional)* **Claude CLI**: `npm install -g @anthropic-ai/claude-code`
 
-1. Open **Command Prompt** (search "cmd" in Start, right-click → Run as administrator)
-2. Navigate to this folder: `cd "C:\Users\nick\Desktop\Models\Qwythos-9B-Claude-Mythos\Qwythos-9B-Claude-Mythos-5-1M-MTP-Q4_K_M"`
-3. Run the setup batch file: `setup.bat`
-4. Wait for the prompts — just press Enter to accept defaults
-5. When it finishes, you'll see a message that the model is ready
-6. Open a new Command Prompt and run: `claude --model qwythos-9b-claude-mythos-5-1m-mtp-q4_k_m`
+---
 
-That's it — you can now chat with the model locally.
+## Quick Start
 
-## What each file does
+### 1. Launch the Desktop GUI
+Simply double-click **`launch.bat`** (or run `python main.py`).
 
+### 2. Run with Claude CLI
+Double-click **`setup.bat`** (or run `python setup.py`). It will detect your GGUF, build the Ollama model, start the LiteLLM proxy, and launch the Claude CLI session.
 
-- `config.py` — interactive tool to pick the GGUF file, set hardware limits, and generate `Modelfile` + `config.yaml`
-- `config.yaml` — LiteLLM proxy configuration (model name, Ollama endpoint, context size)
-- `setup.py` — automation script that detects the GGUF, optionally creates a model-named folder, builds a Modelfile, runs `ollama create`, spins up the LiteLLM proxy, then launches the Claude CLI through it
-- `Modelfile` — Ollama model definition — FROM the GGUF, with default context 65536 and temperature 0.2
-- `litellm.log` — log output from a previous run (likely from `setup.py` or `config.py`)
+---
 
-## Customizing hardware settings
+## Core Files
 
-If you want to tweak context size, GPU offload, CPU threads, batch size, or temperature, run `config.py` interactively. It will prompt you for each setting and then rebuild `Modelfile` and `config.yaml` with your choices.
+| File | Purpose |
+|---|---|
+| `main.py` | PySide6 Desktop GUI chat application |
+| `backend.py` | Health polling, streaming inference worker, process management |
+| `styles.py` | Pip-Boy styling, color palette, custom QSS stylesheets |
+| `widgets.py` | Custom QPainter CRT scanlines, LEDs, hardware strip, meters |
+| `configs.py` | Central `ModelConfig` schema for Modelfile and config.yaml |
+| `settings.py` | Persistent user connection endpoints (`~/.qwythos/settings.json`) |
+| `hardware.py` | CPU/RAM/GPU detection and automatic tuning recommendations |
+| `config.py` | Terminal hardware tuning TUI (`--auto`, `--show` flags supported) |
+| `setup.py` | End-to-end setup and launch automation script |
+| `launch.bat` | Double-click launcher for the desktop GUI |
+| `setup.bat` | Double-click launcher for setup and CLI stack |
 
-## Troubleshooting
+---
 
-- If `setup.bat` fails with "Ollama CLI not found", make sure Ollama is installed and added to your system PATH
-- If the model doesn't load, check that the GGUF file is not corrupted (try re-downloading)
-- For GPU acceleration, ensure your GPU is supported by Ollama (NVIDIA CUDA, AMD ROCm, or Apple Silicon)
+## Script Options & Commands
+
+```powershell
+# Install dependencies
+pip install -r requirements.txt
+
+# Start Desktop GUI
+launch.bat
+python main.py
+
+# Interactive Setup & Claude CLI Launcher
+setup.bat
+python setup.py
+
+# Automated setup with hardware recommendations
+python setup.py --auto
+
+# Start LiteLLM proxy only
+python setup.py --proxy
+
+# Build Ollama model only
+python setup.py --build
+
+# Hardware Tuning TUI
+python config.py
+
+# Auto-apply hardware recommendations to Modelfile & config.yaml
+python config.py --auto
+
+# Inspect detected hardware and active configuration
+python config.py --show
+```

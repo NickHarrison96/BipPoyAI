@@ -1,20 +1,26 @@
 #!/usr/bin/env python3
 """
-End-to-end installer: GGUF → Ollama → LiteLLM → Claude CLI.
+End-to-end installer and runner: GGUF → Ollama → LiteLLM → Claude CLI.
 
-Uses configs.py so hardware tuning survives repeated runs — no more clobbering
-whatever config.py wrote with a bare-bones template.
+Uses configs.py + settings.py so hardware tuning and connection settings
+survive repeated runs without clobbering existing configuration.
 """
 
+import argparse
 import os
 import shutil
 import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Optional
+from urllib.parse import urlparse
+
+import requests
 
 import configs
 import hardware
+import settings
 
 
 C_HEADER = "\033[95m"
@@ -40,40 +46,62 @@ def warn(m):     log("WARN",    C_YELLOW, m)
 def error(m):    log("ERROR",   C_RED,   m)
 
 
-def ask(msg: str) -> bool:
+def ask(msg: str, default: bool = True) -> bool:
+    hint = "Y/n" if default else "y/N"
     try:
-        return input(f"\n{C_YELLOW}[?] {msg} (Y/N): {C_RESET}").strip().lower() in ("y", "yes")
+        ans = input(f"\n{C_YELLOW}[?] {msg} ({hint}): {C_RESET}").strip().lower()
+        if not ans:
+            return default
+        return ans in ("y", "yes")
     except (KeyboardInterrupt, EOFError):
         print()
         return False
 
 
-def die(code: int = 0):
-    print(f"\n{C_GRAY}[!] Press Enter to close...{C_RESET}")
-    try:
-        input()
-    except (KeyboardInterrupt, EOFError):
-        pass
+def die(code: int = 0, pause: bool = True):
+    if pause:
+        print(f"\n{C_GRAY}[!] Press Enter to close...{C_RESET}")
+        try:
+            input()
+        except (KeyboardInterrupt, EOFError):
+            pass
     sys.exit(code)
 
 
 # ─── Stages ───────────────────────────────────────────────────────────────────
 
-def stage_detect_gguf(working_dir: Path) -> Path:
+def stage_detect_gguf(working_dir: Path, auto: bool = False, requested_name: Optional[str] = None) -> Path:
     print(f"{C_HEADER}=== STAGE 1: GGUF File Check ==={C_RESET}")
     ggufs = list(working_dir.glob("*.gguf"))
     if not ggufs:
+        existing = configs.load_full(working_dir)
+        if existing.selected_gguf:
+            warn(f"No .gguf files currently in {working_dir}.")
+            warn(f"Using previously configured model reference: {existing.selected_gguf}")
+            return working_dir / existing.selected_gguf
         error(f"No .gguf files in {working_dir}")
-        die(1)
+        error("Download the model weights first (e.g. Qwythos-9B-Claude-Mythos-5-1M-MTP-Q4_K_M.gguf).")
+        die(1, pause=not auto)
+
+    if requested_name:
+        for f in ggufs:
+            if requested_name.lower() in f.name.lower():
+                verbose(f"Matched GGUF: {f.name}")
+                return f
 
     if len(ggufs) > 1:
+        if auto:
+            target = ggufs[0]
+            verbose(f"Auto-selected first GGUF: {target.name}")
+            return target
+
         verbose("Multiple GGUF files detected:")
         for i, f in enumerate(ggufs):
             print(f"  [{i}] {f.name}")
         sel = input(f"Select index (0-{len(ggufs)-1}): ").strip()
         if not sel.isdigit() or int(sel) >= len(ggufs):
             error("Invalid selection.")
-            die(1)
+            die(1, pause=not auto)
         target = ggufs[int(sel)]
     else:
         target = ggufs[0]
@@ -82,9 +110,8 @@ def stage_detect_gguf(working_dir: Path) -> Path:
     return target
 
 
-def stage_write_configs(working_dir: Path, gguf: Path):
-    """Merge on-disk config + hardware recommendations, then write both files.
-    Skips the write if the user says no — but only after showing what would change."""
+def stage_write_configs(working_dir: Path, gguf: Path, auto: bool = False) -> configs.ModelConfig:
+    """Merge on-disk config + hardware recommendations, then write both files."""
     print(f"\n{C_HEADER}=== STAGE 2: Modelfile + config.yaml ==={C_RESET}")
 
     existing = configs.load_full(working_dir)
@@ -112,8 +139,10 @@ def stage_write_configs(working_dir: Path, gguf: Path):
     print(f"  cpu_threads  = {cfg.cpu_threads}")
     print(f"  batch_size   = {cfg.batch_size}")
     print(f"  temperature  = {cfg.temperature}")
+    print(f"  ollama_url   = {cfg.ollama_base_url}")
+    print(f"  litellm_url  = {cfg.litellm_url}")
 
-    if ask("Write Modelfile + config.yaml with these values?"):
+    if auto or ask("Write Modelfile + config.yaml with these values?", default=True):
         configs.write_all(cfg, working_dir)
         success("Wrote Modelfile.")
         success("Wrote config.yaml.")
@@ -123,16 +152,16 @@ def stage_write_configs(working_dir: Path, gguf: Path):
     return cfg
 
 
-def stage_build_ollama(working_dir: Path, cfg: configs.ModelConfig):
+def stage_build_ollama(working_dir: Path, cfg: configs.ModelConfig, auto: bool = False):
     print(f"\n{C_HEADER}=== STAGE 3: Ollama Model Build ==={C_RESET}")
 
-    if not ask(f"Run 'ollama create {cfg.model_tag}'?"):
+    if not auto and not ask(f"Run 'ollama create {cfg.model_tag}'?", default=True):
         verbose("Skipped Ollama build.")
         return
 
     if not shutil.which("ollama"):
         error("Ollama CLI not in PATH. Install from https://ollama.com")
-        die(1)
+        die(1, pause=not auto)
 
     verbose(f"ollama create {cfg.model_tag} -f ./Modelfile")
     proc = subprocess.run(
@@ -141,58 +170,160 @@ def stage_build_ollama(working_dir: Path, cfg: configs.ModelConfig):
     )
     if proc.returncode != 0:
         error(f"ollama create failed (exit {proc.returncode})")
-        die(1)
+        die(1, pause=not auto)
     success(f"Registered '{cfg.model_tag}' with Ollama.")
 
 
-def stage_launch_stack(working_dir: Path, cfg: configs.ModelConfig):
-    print(f"\n{C_HEADER}=== STAGE 4: LiteLLM Proxy + Claude CLI ==={C_RESET}")
+def is_litellm_running(url: str) -> bool:
+    """Check if LiteLLM proxy is alive and answering health checks."""
+    try:
+        r = requests.get(f"{url}/health", timeout=3)
+        return r.status_code == 200
+    except Exception:
+        return False
 
-    if not ask("Spin up LiteLLM Proxy and launch Claude CLI?"):
-        verbose("Skipped launcher.")
-        return
+
+def start_litellm_proxy(working_dir: Path, cfg: configs.ModelConfig) -> bool:
+    """Start LiteLLM proxy if not already running."""
+    if is_litellm_running(cfg.litellm_url):
+        success(f"LiteLLM proxy is already running at {cfg.litellm_url}")
+        return True
 
     if not (working_dir / "config.yaml").exists():
-        error("config.yaml missing. Run stage 2 or config.py first.")
-        die(1)
+        error("config.yaml missing. Generating config first...")
+        configs.write_config_yaml(cfg, working_dir / "config.yaml")
+
     if not shutil.which("litellm"):
         error("LiteLLM CLI not in PATH. Run: pip install litellm")
-        die(1)
+        return False
 
-    verbose("Spawning LiteLLM proxy on port 4000...")
-    cmd = ["litellm", "--config", str(working_dir / "config.yaml"), "--port", "4000"]
+    port = urlparse(cfg.litellm_url).port or 4000
+    verbose(f"Spawning LiteLLM proxy on port {port}...")
+    cmd = ["litellm", "--config", str(working_dir / "config.yaml"), "--port", str(port)]
     if os.name == "nt":
         subprocess.Popen(cmd, cwd=str(working_dir),
                          creationflags=subprocess.CREATE_NEW_CONSOLE)
     else:
         subprocess.Popen(cmd, cwd=str(working_dir))
 
-    time.sleep(3)
+    verbose("Waiting for LiteLLM to initialize...")
+    for _ in range(30):
+        time.sleep(2)
+        if is_litellm_running(cfg.litellm_url):
+            success(f"LiteLLM proxy is live at {cfg.litellm_url}")
+            return True
 
+    warn("LiteLLM started but did not respond within 60s. Continuing anyway...")
+    return False
+
+
+def stage_launch_stack(working_dir: Path, cfg: configs.ModelConfig, auto: bool = False, launch_claude: bool = True):
+    print(f"\n{C_HEADER}=== STAGE 4: LiteLLM Proxy + Claude CLI ==={C_RESET}")
+
+    if not auto and not ask("Spin up LiteLLM Proxy and launch Claude CLI?", default=True):
+        verbose("Skipped launcher.")
+        return
+
+    start_litellm_proxy(working_dir, cfg)
+
+    # Set Anthropic spoofing environment variables for Claude CLI
     os.environ["ANTHROPIC_BASE_URL"] = cfg.litellm_url
     os.environ["ANTHROPIC_AUTH_TOKEN"] = "ollama"
     os.environ["ANTHROPIC_API_KEY"] = cfg.litellm_api_key
-    success(f"LiteLLM running at {cfg.litellm_url}")
+
+    if not launch_claude:
+        return
 
     if not shutil.which("claude"):
-        error("Claude CLI not in PATH.")
-        die(1)
+        warn("Claude CLI ('claude') not found in PATH.")
+        warn("To chat with the model via CLI, install Claude Code:")
+        warn("    npm install -g @anthropic-ai/claude-code")
+        warn("Or start the desktop GUI:")
+        warn("    python main.py  (or launch.bat)")
+        return
+
+    success(f"Launching Claude CLI with model: {cfg.model_tag}")
     subprocess.run(["claude", "--model", cfg.model_tag])
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Qwythos AI — Setup & Launch Automation",
+        formatter_class=argparse.RawTextHelpFormatter,
+    )
+    parser.add_argument(
+        "--auto", "-y",
+        action="store_true",
+        help="Run setup non-interactively using detected hardware recommendations",
+    )
+    parser.add_argument(
+        "--config-only",
+        action="store_true",
+        help="Generate Modelfile and config.yaml only, without building or running",
+    )
+    parser.add_argument(
+        "--build",
+        action="store_true",
+        help="Build the Ollama model from Modelfile and exit",
+    )
+    parser.add_argument(
+        "--proxy",
+        action="store_true",
+        help="Start LiteLLM proxy and exit",
+    )
+    parser.add_argument(
+        "--claude",
+        action="store_true",
+        help="Ensure LiteLLM is running, set env vars, and launch Claude CLI",
+    )
+    parser.add_argument(
+        "--no-pause",
+        action="store_true",
+        help="Do not pause on exit",
+    )
+    return parser.parse_args()
+
+
 def main():
+    args = parse_args()
+    working_dir = Path(__file__).parent.resolve()
+    auto = args.auto
+    pause = not (auto or args.no_pause)
+
     try:
-        working_dir = Path.cwd()
-        gguf = stage_detect_gguf(working_dir)
-        cfg = stage_write_configs(working_dir, gguf)
-        stage_build_ollama(working_dir, cfg)
-        stage_launch_stack(working_dir, cfg)
+        # If running a single target action and configs already exist, load directly without prompting
+        if (args.proxy or args.claude) and (working_dir / "config.yaml").exists():
+            cfg = configs.load_full(working_dir)
+        else:
+            gguf = stage_detect_gguf(working_dir, auto=auto)
+            cfg = stage_write_configs(working_dir, gguf, auto=auto)
+
+        if args.config_only:
+            success("Config generation complete.")
+            die(0, pause=pause)
+
+        if args.build:
+            stage_build_ollama(working_dir, cfg, auto=True)
+            die(0, pause=pause)
+
+        if args.proxy:
+            start_litellm_proxy(working_dir, cfg)
+            die(0, pause=pause)
+
+        if args.claude:
+            stage_launch_stack(working_dir, cfg, auto=True, launch_claude=True)
+            die(0, pause=pause)
+
+        # Full end-to-end wizard flow
+        stage_build_ollama(working_dir, cfg, auto=auto)
+        stage_launch_stack(working_dir, cfg, auto=auto, launch_claude=True)
+        die(0, pause=pause)
+
+    except SystemExit:
+        raise
     except Exception as e:
-        error("Unexpected failure:")
-        print(f"{C_RED}{e}{C_RESET}")
-        die(1)
-    finally:
-        die(0)
+        error(f"Unexpected failure: {e}")
+        die(1, pause=pause)
 
 
 if __name__ == "__main__":

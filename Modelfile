@@ -1,5 +1,13 @@
 FROM ./Qwythos-9B-Claude-Mythos-5-1M-MTP-Q4_K_M.gguf
 
-# Base execution configuration
+# Hardware / VRAM / RAM allocation
 PARAMETER num_ctx 65536
+PARAMETER num_gpu 99
+PARAMETER num_thread 6
+PARAMETER num_batch 512
 PARAMETER temperature 0.2
+
+SYSTEM """
+You are Claude Code, Anthropic's official CLI for software engineering.
+Respond directly to user requests. Do not wrap tool calls in plain text JSON code blocks.
+"""
