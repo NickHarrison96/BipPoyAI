@@ -168,6 +168,11 @@ def load_modelfile(path: Path) -> ModelConfig:
     _int_param(content, r'num_thread',  lambda v: setattr(cfg, "cpu_threads",  v))
     _int_param(content, r'num_batch',   lambda v: setattr(cfg, "batch_size",   v))
     _float_param(content, r'temperature', lambda v: setattr(cfg, "temperature", v))
+    # Records that the model tag is a deliberate rename rather than drift.
+    # Lives in the Modelfile so the acknowledgement travels with the weights
+    # instead of depending on Ollama being online when the check runs.
+    if re.search(r'^\s*#\s*tag:\s*custom\s*$', content, re.MULTILINE):
+        cfg.tag_is_custom = True
     _float_param(content, r'top_p',     lambda v: setattr(cfg, "top_p",     v))
     _int_param(content, r'top_k',        lambda v: setattr(cfg, "top_k",     v))
     _float_param(content, r'repeat_penalty', lambda v: setattr(cfg, "repeat_penalty", v))
@@ -310,7 +315,14 @@ PARAMETER num_gpu {gpu_layers}
 PARAMETER num_thread {cpu_threads}
 PARAMETER num_batch {batch_size}
 PARAMETER temperature {temperature}
-{optional_params}{system_block}"""
+{tag_marker}{optional_params}{system_block}"""
+
+
+def _modelfile_tag_marker(cfg: ModelConfig) -> str:
+    """Record a deliberate tag rename so coherence_issues accepts it offline."""
+    if cfg.tag_is_custom:
+        return "# tag: custom\n"
+    return ""
 
 
 def _modelfile_optional_params(cfg: ModelConfig) -> str:
@@ -350,6 +362,7 @@ def write_modelfile(cfg: ModelConfig, path: Path) -> None:
             cpu_threads=cfg.cpu_threads,
             batch_size=cfg.batch_size,
             temperature=cfg.temperature,
+            tag_marker=_modelfile_tag_marker(cfg),
             optional_params=_modelfile_optional_params(cfg),
             system_block=_modelfile_system_block(cfg),
         ),
