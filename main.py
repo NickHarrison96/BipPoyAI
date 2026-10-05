@@ -40,6 +40,7 @@ from widgets import (
 from configs import ModelConfig, load_full, write_all
 from hardware import detect as detect_hardware
 import history
+import model_registry
 
 
 # ─── Resolve working directory (always relative to this script) ───────────────
@@ -523,8 +524,9 @@ class SettingsPanel(QFrame):
         self._reset_dirty()
 
     def _refresh_gguf_list(self):
-        """Populate the GGUF selector with Models/ files, then re-select whatever
-        the config already points at (which may be an absolute path elsewhere)."""
+        """Populate the GGUF selector with ONLY the GGUFs inside the project's
+        Models/ directory. Out-of-project weights are tracked in
+        .external_paths.json instead of cluttering the dropdown."""
         working_dir = Path(self.backend.working_dir)
         models_dir = working_dir / "Models"
         ggufs = sorted(f.name for f in models_dir.glob("*.gguf")) if models_dir.exists() else []
@@ -533,27 +535,30 @@ class SettingsPanel(QFrame):
         self.gguf_combo.blockSignals(True)
         self.gguf_combo.clear()
         self.gguf_combo.addItems(ggufs)
-        current = current_cfg.selected_gguf
-        if current:
-            # Keep the configured selection visible even when the file is not in
-            # Models/ - otherwise it looks like nothing is selected.
-            if current not in ggufs:
-                self.gguf_combo.addItem(current)
-            self.gguf_combo.setCurrentText(current)
+
+        current = current_cfg.selected_gguf or ""
+        current_name = Path(current).name
+        if current_name and current_name in ggufs:
+            self.gguf_combo.setCurrentText(current_name)
+        elif current:
+            # The active model lives outside the project. Show its filename in
+            # the (editable) field without adding it to the project-only list.
+            self.gguf_combo.setCurrentText(current_name)
         elif not ggufs:
             self.gguf_combo.addItem("(no .gguf found - click Browse.)")
             self.gguf_combo.setCurrentIndex(0)
         self.gguf_combo.blockSignals(False)
 
     def _browse_for_gguf(self):
-        """Pick a GGUF from anywhere on disk (models often live on another drive)."""
+        """Pick a GGUF from anywhere on disk, and remember its location for this
+        machine in .external_paths.json so the project config stays portable."""
         working_dir = Path(self.backend.working_dir)
         start_dir = working_dir
         current = load_full(working_dir).selected_gguf
         if current:
-            candidate = Path(current)
-            if candidate.is_absolute() and candidate.parent.is_dir():
-                start_dir = candidate.parent
+            resolved = model_registry.resolve(current, working_dir)
+            if resolved.parent.is_dir():
+                start_dir = resolved.parent
 
         path, _ = QFileDialog.getOpenFileName(
             self,
@@ -564,32 +569,103 @@ class SettingsPanel(QFrame):
         if not path:
             return
 
+        abs_path = Path(path)
+        name = abs_path.name
+        if not model_registry.is_in_project(abs_path):
+            model_registry.remember_external(name, str(abs_path))
+
         self.gguf_combo.blockSignals(True)
-        self.gguf_combo.addItem(path)
-        self.gguf_combo.setCurrentText(path)
+        self.gguf_combo.setCurrentText(name)
         self.gguf_combo.blockSignals(False)
-        self._on_gguf_changed(path)
+        self._on_gguf_changed(name)
 
     def _on_gguf_changed(self, filename: str):
-        """Switch to a different GGUF: derive tag, rebuild configs, hot-swap backend."""
+        """Switch to a different GGUF: derive tag, restore that model's own
+        settings, rebuild configs, hot-swap the backend, and offer to install
+        the model into Ollama if it is not there yet."""
         if not filename or filename.startswith("("):
             return
         working_dir = Path(self.backend.working_dir)
 
-        from configs import derive_model_tag
-        new_tag = derive_model_tag(filename)
+        abs_path = model_registry.resolve(filename, working_dir)
+        if not abs_path.exists():
+            QMessageBox.warning(
+                self, "Model file not found",
+                f"Cannot find the selected model file:\n\n{abs_path}"
+            )
+            return
 
-        cfg = load_full(working_dir)
-        cfg = cfg.with_updates(selected_gguf=filename, model_tag=new_tag)
+        name = abs_path.name
+        if model_registry.is_in_project(abs_path):
+            selected = f"Models/{name}"
+        else:
+            selected = name
+            model_registry.remember_external(name, str(abs_path))
+
+        from configs import derive_model_tag
+        derived = derive_model_tag(name)
+
+        # Restore this model's saved tuning, or clean defaults so a fresh model
+        # never inherits the previous model's context/temperature/etc. The saved
+        # tag is honoured so a custom Ollama name survives switching weights.
+        saved = model_registry.model_settings(name)
+        merged = {**model_registry.default_settings(), **saved}
+        new_tag = (merged.get("tag") or derived)
+        tag_is_custom = bool(merged.get("tag") and merged.get("tag") != derived)
+
+        cfg = ModelConfig(
+            selected_gguf=selected,
+            model_tag=new_tag,
+            tag_is_custom=tag_is_custom,
+            engine_mode=self.engine_combo.currentText() or "litellm_chat",
+            context_size=int(merged["context_size"]),
+            gpu_layers=int(merged["gpu_layers"]),
+            cpu_threads=int(merged["cpu_threads"]),
+            batch_size=int(merged["batch_size"]),
+            temperature=float(merged["temperature"]),
+            max_tokens=int(merged["max_tokens"]),
+            thinking=bool(merged["thinking"]),
+            top_p=merged["top_p"],
+            top_k=merged["top_k"],
+            repeat_penalty=merged["repeat_penalty"],
+            system_prompt=(merged["system_prompt"] or ""),
+        )
+
         try:
             write_all(cfg, working_dir, self._registered_tags)
         except ValueError as e:
             QMessageBox.warning(self, "Switch Failed", str(e))
             return
 
+        # Reflect the restored settings in the form so nothing needs re-typing.
+        self._populate_fields(cfg)
+
         self.backend.set_model_tag(new_tag)
-        self.model_combo.setCurrentText(new_tag)
+        self.backend.update_settings(
+            temperature=cfg.temperature,
+            num_ctx=cfg.context_size,
+            max_tokens=cfg.max_tokens,
+            engine_mode=cfg.engine_mode,
+        )
         self.info_label.setText(f"Model: {new_tag}")
+        self._reset_dirty()
+
+        self._offer_install(new_tag)
+
+    def _offer_install(self, tag: str):
+        """Prompt to build the model into Ollama if its tag is not installed."""
+        if tag in set(self.backend.installed_models()):
+            return
+        reply = QMessageBox.question(
+            self,
+            "Model not installed",
+            f"The selected model '{tag}' is not installed in Ollama yet.\n\n"
+            "Install it now? (This creates it from the Modelfile.)",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        )
+        if reply == QMessageBox.Yes:
+            self.model_rebuild_requested.emit()
 
     def _on_model_list_updated(self, models: list):
         """Update model switcher dropdown when Ollama reports installed models."""
@@ -613,49 +689,71 @@ class SettingsPanel(QFrame):
             self.backend.set_model_tag(tag)
             self.info_label.setText(f"Model: {tag}")
 
+    def _populate_fields(self, cfg: ModelConfig):
+        """Reflect a ModelConfig in the settings form (model + inference + HW)."""
+        val = str(cfg.context_size)
+        idx = self.ctx_combo.findText(val)
+        if idx >= 0:
+            self.ctx_combo.setCurrentIndex(idx)
+
+        self.gpu_spin.setValue(cfg.gpu_layers)
+        self.cpu_spin.setValue(cfg.cpu_threads)
+
+        val = str(cfg.batch_size)
+        idx = self.batch_combo.findText(val)
+        if idx >= 0:
+            self.batch_combo.setCurrentIndex(idx)
+
+        # Seed from disk like every other field, otherwise Apply/Save would
+        # overwrite config.yaml's max_tokens with this combo's stale default.
+        val = str(cfg.max_tokens)
+        idx = self.max_tokens_combo.findText(val)
+        if idx >= 0:
+            self.max_tokens_combo.setCurrentIndex(idx)
+
+        self.temp_spin.setValue(cfg.temperature)
+
+        # Sampling params are Optional on the model: 0 means "not set".
+        self.top_p_spin.setValue(cfg.top_p or 0.0)
+        self.top_k_spin.setValue(cfg.top_k or 0)
+        self.repeat_penalty_spin.setValue(cfg.repeat_penalty or 1.0)
+        self.model_persona_edit.setPlainText(cfg.system_prompt)
+
+        idx = self.engine_combo.findText(cfg.engine_mode)
+        if idx >= 0:
+            self.engine_combo.setCurrentIndex(idx)
+
+        if cfg.model_tag:
+            self.model_combo.setCurrentText(cfg.model_tag)
+            self.info_label.setText(f"Model: {cfg.model_tag}")
+
+        # Thinking is owned by config.yaml (extra_body.think).
+        self.thinking_check.setChecked(bool(cfg.thinking))
+
+    def _collect_model_settings(self) -> dict:
+        """Snapshot the per-model form fields for persistence in the registry."""
+        return {
+            "tag": (self.model_combo.currentText().strip() or None),
+            "context_size": int(self.ctx_combo.currentText()),
+            "max_tokens": int(self.max_tokens_combo.currentText()),
+            "temperature": self.temp_spin.value(),
+            "gpu_layers": self.gpu_spin.value(),
+            "cpu_threads": self.cpu_spin.value(),
+            "batch_size": int(self.batch_combo.currentText()),
+            "top_p": (self.top_p_spin.value() or None),
+            "top_k": (self.top_k_spin.value() or None),
+            "repeat_penalty": (
+                self.repeat_penalty_spin.value() if self.repeat_penalty_spin.value() != 1.0 else None
+            ),
+            "thinking": self.thinking_check.isChecked(),
+            "system_prompt": self.model_persona_edit.toPlainText().strip(),
+        }
+
     def _load_from_configs(self):
         """Read current settings from Modelfile + config.yaml via configs module."""
         try:
             cfg = load_full(Path(self.backend.working_dir))
-
-            val = str(cfg.context_size)
-            idx = self.ctx_combo.findText(val)
-            if idx >= 0:
-                self.ctx_combo.setCurrentIndex(idx)
-
-            self.gpu_spin.setValue(cfg.gpu_layers)
-            self.cpu_spin.setValue(cfg.cpu_threads)
-
-            val = str(cfg.batch_size)
-            idx = self.batch_combo.findText(val)
-            if idx >= 0:
-                self.batch_combo.setCurrentIndex(idx)
-
-            # Seed from disk like every other field, otherwise Apply/Save would
-            # overwrite config.yaml's max_tokens with this combo's stale default.
-            val = str(cfg.max_tokens)
-            idx = self.max_tokens_combo.findText(val)
-            if idx >= 0:
-                self.max_tokens_combo.setCurrentIndex(idx)
-
-            self.temp_spin.setValue(cfg.temperature)
-
-            # Sampling params are Optional on the model: 0 means "not set".
-            self.top_p_spin.setValue(cfg.top_p or 0.0)
-            self.top_k_spin.setValue(cfg.top_k or 0)
-            self.repeat_penalty_spin.setValue(cfg.repeat_penalty or 1.0)
-            self.model_persona_edit.setPlainText(cfg.system_prompt)
-
-            idx = self.engine_combo.findText(cfg.engine_mode)
-            if idx >= 0:
-                self.engine_combo.setCurrentIndex(idx)
-
-            if cfg.model_tag:
-                self.model_combo.setCurrentText(cfg.model_tag)
-                self.info_label.setText(f"Model: {cfg.model_tag}")
-
-            # Thinking is owned by config.yaml (extra_body.think).
-            self.thinking_check.setChecked(bool(cfg.thinking))
+            self._populate_fields(cfg)
 
             self.system_prompt_edit.setText(self.backend.get_system_prompt())
 
@@ -800,9 +898,10 @@ class SettingsPanel(QFrame):
 
         model_tag = self.model_combo.currentText().strip() or self.backend.get_model_tag()
 
-        # The selected GGUF may be repo-local or an absolute path chosen via
-        # Browse (models usually live on another drive), so validate it rather
-        # than requiring a .gguf in the project directory.
+        # The selected GGUF may be repo-local or an external path remembered in
+        # .external_paths.json. Resolve through the registry and store the
+        # portable reference so config.yaml/Modelfile don't hard-code this
+        # machine's absolute path.
         chosen_gguf = self.gguf_combo.currentText().strip()
         if not chosen_gguf or chosen_gguf.startswith("("):
             chosen_gguf = load_full(working_dir).selected_gguf or ""
@@ -816,9 +915,7 @@ class SettingsPanel(QFrame):
             )
             return
 
-        gguf_path = Path(chosen_gguf)
-        if not gguf_path.is_absolute():
-            gguf_path = working_dir / gguf_path
+        gguf_path = model_registry.resolve(chosen_gguf, working_dir)
         if not gguf_path.exists():
             QMessageBox.warning(
                 self, "Model file not found",
@@ -827,8 +924,15 @@ class SettingsPanel(QFrame):
             )
             return
 
+        name = gguf_path.name
+        if model_registry.is_in_project(gguf_path):
+            selected_gguf = f"Models/{name}"
+        else:
+            selected_gguf = name
+            model_registry.remember_external(name, str(gguf_path))
+
         cfg = ModelConfig(
-            selected_gguf=chosen_gguf,
+            selected_gguf=selected_gguf,
             model_tag=model_tag,
             engine_mode=self.engine_combo.currentText(),
             context_size=int(self.ctx_combo.currentText()),
@@ -854,6 +958,10 @@ class SettingsPanel(QFrame):
         except ValueError as e:
             QMessageBox.critical(self, "Save Failed", str(e))
             return
+
+        # Remember this model's tuned fields (keyed by its weights filename) so
+        # switching away and back restores them instead of forcing manual re-entry.
+        model_registry.remember_model_settings(name, self._collect_model_settings())
 
         # Point the session at the tag we just wrote before creating it, so the
         # rebuild targets the selected model rather than whatever the dropdown

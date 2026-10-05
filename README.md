@@ -49,6 +49,10 @@ User (Claude CLI or GUI chat)
 
 ## Quick Start
 
+### 0. First-time setup
+Double-click **`check_and_install_deps.bat`** to verify Python 3.11+ and Ollama are
+installed, install the Python packages, and open download pages for anything missing.
+
 ### 1. Launch the Desktop GUI
 Simply double-click **`launch.bat`** (or run `python main.py`).
 
@@ -66,11 +70,13 @@ Double-click **`setup.bat`** (or run `python setup.py`). It will detect your GGU
 | `styles.py` | Pip-Boy styling, color palette, custom QSS stylesheets |
 | `widgets.py` | Custom QPainter CRT scanlines, LEDs, hardware strip, meters |
 | `configs.py` | Central `ModelConfig` schema for Modelfile and config.yaml |
-| `settings.py` | Persistent user connection endpoints (`~/.qwythos/settings.json`) |
+| `settings.py` | Persistent connection endpoints (`.state/settings.json`) |
+| `model_registry.py` | Remembers external weight paths and per-model tuning (`.state/`) |
 | `hardware.py` | CPU/RAM/GPU detection and automatic tuning recommendations |
 | `config.py` | Terminal hardware tuning TUI (`--auto`, `--show` flags supported) |
 | `setup.py` | End-to-end setup and launch automation script |
 | `tools/gguf_guards.py` | Inspect/neutralise chat-template guards; validate GGUF integrity |
+| `check_and_install_deps.bat` | Scans for Python/Ollama/npm, opens download pages for missing tools, installs `requirements.txt` |
 | `launch.bat` | Double-click launcher for the desktop GUI |
 | `setup.bat` | Double-click launcher for setup and CLI stack |
 
@@ -79,6 +85,9 @@ Double-click **`setup.bat`** (or run `python setup.py`). It will detect your GGU
 ## Script Options & Commands
 
 ```powershell
+# Check and install missing dependencies
+check_and_install_deps.bat
+
 # Install dependencies
 pip install -r requirements.txt
 

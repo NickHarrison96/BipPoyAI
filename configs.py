@@ -14,12 +14,9 @@ from typing import Optional
 
 import settings
 
-VALID_ENGINE_MODES = ("direct", "litellm_standard", "litellm_chat")
+import model_registry
 
-# Repo root, used to resolve the relative 'Models/<file>.gguf' form that
-# config.yaml stores against the real project directory instead of whatever
-# the current working directory happens to be.
-PROJECT_ROOT = Path(__file__).resolve().parent
+VALID_ENGINE_MODES = ("direct", "litellm_standard", "litellm_chat")
 
 # Ollama refuses model names longer than 80 characters.
 MAX_TAG_LENGTH = 80
@@ -97,7 +94,7 @@ def derive_model_tag(gguf_filename: str) -> str:
     return tag
 
 
-def modelfile_from_path(selected_gguf: str) -> str:
+def modelfile_from_path(selected_gguf: str, working_dir=None) -> str:
     """Render the Modelfile FROM value for a GGUF reference.
 
     Always absolute, always forward slashes. Ollama on Windows cannot import a
@@ -106,20 +103,11 @@ def modelfile_from_path(selected_gguf: str) -> str:
     answers with a misleading "Error: 400 Bad Request: invalid model name" that
     looks like a problem with the chosen tag. An absolute path is accepted.
 
-    The Modelfile is a machine-local build artifact -- setup.py and the GUI
-    rewrite it whenever the selected model changes -- so an absolute path costs
-    nothing in portability.
+    Resolution goes through model_registry so a bare filename that refers to an
+    out-of-project weight (tracked in .external_paths.json) still resolves to
+    the real bytes on this machine.
     """
-    p = Path(selected_gguf)
-    if not p.is_absolute():
-        # A bare filename (no directory component) is the value the GUI dropdown
-        # passes; those files live in Models/. Anything with a directory part
-        # (e.g. 'Models/<file>') resolves against the project root directly.
-        if len(p.parts) == 1:
-            p = PROJECT_ROOT / "Models" / p
-        else:
-            p = PROJECT_ROOT / p
-    return p.as_posix()
+    return model_registry.resolve(selected_gguf, working_dir).as_posix()
 
 
 def coherence_issues(cfg: "ModelConfig", registered_tags=None, working_dir=None) -> list:
@@ -150,9 +138,10 @@ def coherence_issues(cfg: "ModelConfig", registered_tags=None, working_dir=None)
         return issues
 
     gguf_path = Path(cfg.selected_gguf)
-    # Relative entries ("Models/x.gguf") resolve against the project directory,
-    # not the process cwd, or the check reports a false "missing" file.
-    resolved = gguf_path if gguf_path.is_absolute() or working_dir is None else (Path(working_dir) / gguf_path)
+    # Relative entries ("Models/x.gguf" or a bare external name) resolve through
+    # the registry against the project directory and .external_paths.json, not
+    # the process cwd — otherwise the check reports a false "missing" file.
+    resolved = model_registry.resolve(cfg.selected_gguf, working_dir)
     if not resolved.exists():
         issues.append(
             f"Modelfile points at a model file that does not exist:\n"
@@ -197,9 +186,13 @@ def load_modelfile(path: Path) -> ModelConfig:
         # back to native separators here — that way a path chosen via a file
         # dialog reads back exactly as it was selected.
         if raw.startswith("./") or raw.startswith(".\\"):
-            cfg.selected_gguf = raw[2:]
+            raw = raw[2:]
         else:
-            cfg.selected_gguf = os.path.normpath(raw)
+            raw = os.path.normpath(raw)
+        # Normalise to the portable reference ("Models/<file>" or a bare name
+        # tracked in .external_paths.json) so the config does not hard-code this
+        # machine's absolute path.
+        cfg.selected_gguf = model_registry.canonicalize(raw)
 
     _int_param(content, r'num_gpu',     lambda v: setattr(cfg, "gpu_layers",   v))
     _int_param(content, r'num_thread',  lambda v: setattr(cfg, "cpu_threads",  v))
@@ -305,7 +298,7 @@ def load_full(working_dir: Path) -> ModelConfig:
         models_dir = working_dir / "Models"
         ggufs = list(models_dir.glob("*.gguf")) if models_dir.exists() else []
         if ggufs:
-            cfg.selected_gguf = ggufs[0].name
+            cfg.selected_gguf = f"Models/{ggufs[0].name}"
 
     if not cfg.model_tag and cfg.selected_gguf:
         cfg.model_tag = derive_model_tag(cfg.selected_gguf)
@@ -390,12 +383,12 @@ def _modelfile_system_block(cfg: ModelConfig) -> str:
     return f'\nSYSTEM """{prompt}"""\n'
 
 
-def write_modelfile(cfg: ModelConfig, path: Path) -> None:
+def write_modelfile(cfg: ModelConfig, path: Path, working_dir=None) -> None:
     if not cfg.selected_gguf:
         raise ValueError("Cannot write Modelfile: no GGUF file selected.")
     path.write_text(
         MODELFILE_TEMPLATE.format(
-            gguf_from=modelfile_from_path(cfg.selected_gguf),
+            gguf_from=modelfile_from_path(cfg.selected_gguf, working_dir),
             gpu_layers=cfg.gpu_layers,
             cpu_threads=cfg.cpu_threads,
             batch_size=cfg.batch_size,
@@ -462,5 +455,5 @@ def write_all(cfg: ModelConfig, working_dir: Path, registered_tags=None) -> None
             + "\n".join(issues)
             + "\n\nFix the model tag or re-pick the GGUF, then save again."
         )
-    write_modelfile(cfg, working_dir / "Modelfile")
+    write_modelfile(cfg, working_dir / "Modelfile", working_dir)
     write_config_yaml(cfg, working_dir / "config.yaml")

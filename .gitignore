@@ -35,6 +35,12 @@ Models/*.gguf
 # Generated per-model Modelfiles (machine-local absolute paths; rebuilt on switch)
 Modelfiles/*.Modelfile
 
+# Generated model/proxy configs (machine-local absolute paths; regenerated on
+# model switch / Save & Rebuild). Never commit these — a clone must regenerate
+# them from the Models/ it has on disk.
+Modelfile
+config.yaml
+
 # Logs
 *.log
 
@@ -44,3 +50,6 @@ Modelfiles/*.Modelfile
 # Scratch / temp files
 .routing_mode
 scratchpad.md
+
+# Per-PC local state: endpoints, external weight paths, per-model tuning
+.state/

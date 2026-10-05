@@ -1,9 +1,13 @@
 """
 User-level application settings — pure data layer.
 
-Reads and writes ~/.qwythos/settings.json. This file holds everything that is
-about *this install* rather than about the model: connection endpoints and
-credentials. Modelfile and config.yaml stay owned by configs.py.
+Reads and writes `.state/settings.json` inside the project directory. This file
+holds everything that is about *this install* rather than about the model:
+connection endpoints and credentials. Modelfile and config.yaml stay owned by
+configs.py.
+
+The whole `.state/` directory is gitignored — it is per-PC state that must
+never be committed.
 
 No GUI or Qt imports here — safe to call from worker threads and the TUI.
 """
@@ -12,7 +16,7 @@ import json
 import os
 from pathlib import Path
 
-SETTINGS_DIR = Path.home() / ".qwythos"
+SETTINGS_DIR = Path(__file__).resolve().parent / ".state"
 SETTINGS_FILE = SETTINGS_DIR / "settings.json"
 
 DEFAULTS = {

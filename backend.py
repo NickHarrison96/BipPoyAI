@@ -875,6 +875,22 @@ class OllamaBackend(QObject):
     def set_model_tag(self, tag: str):
         self.model_tag = tag
 
+    def installed_models(self) -> List[str]:
+        """Names (without ':latest') of the models currently registered in Ollama.
+
+        Synchronous — used at model-switch time so the GUI can warn immediately
+        when the selected weights have not been built into Ollama yet. Returns an
+        empty list when Ollama is offline.
+        """
+        try:
+            resp = requests.get(f"{self.ollama_base_url}/api/tags", timeout=2)
+            if resp.status_code == 200:
+                models = resp.json().get("models", [])
+                return [m.get("name", "").split(":")[0] for m in models]
+        except Exception:
+            pass
+        return []
+
     def update_settings(self, temperature: float, num_ctx: int, max_tokens: int = 8192, engine_mode: Optional[str] = None):
         """Update inference settings."""
         self.temperature = temperature
