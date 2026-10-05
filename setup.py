@@ -230,13 +230,21 @@ def stage_build_ollama(working_dir: Path, cfg: configs.ModelConfig, auto: bool =
              if l.strip().upper().startswith("FROM ")), ""
         )
         from_src = from_line[5:].strip() if from_line else ""
-        if from_src.startswith((".", "/", "\\\\")) or ":" not in from_src:
-            src_path = (working_dir / from_src).resolve() if not Path(from_src).is_absolute() else Path(from_src)
+        # A .gguf FROM is always a local file unless it carries a URL scheme.
+        # Older logic keyed off a leading '.' or '/' and skipped everything
+        # containing ':', which silently excluded every absolute Windows path --
+        # the exact form configs.modelfile_from_path now emits -- from these
+        # checks.
+        if from_src.lower().endswith(".gguf") and "://" not in from_src:
+            src_path = Path(from_src)
+            if not src_path.is_absolute():
+                src_path = (working_dir / from_src).resolve()
             if not src_path.exists():
                 error(f"Modelfile FROM source not found: {from_src}")
                 error("Ollama 0.34+ returns a misleading 'invalid model name' error for missing files.")
                 error("Place the .gguf file in the project directory, or edit Modelfile to point at a valid source.")
-            elif src_path.suffix.lower() == ".gguf":
+                die(1, pause=not auto)
+            else:
                 # A chat template with live raise_exception guards will abort
                 # mid-conversation (HTTP 500) on tool-result turns, which reads
                 # as a proxy fault rather than a model fault. Catch it at build
@@ -259,7 +267,6 @@ def stage_build_ollama(working_dir: Path, cfg: configs.ModelConfig, auto: bool =
                     error(f"  python tools/gguf_guards.py \"{src_path}\" --patch \"{src_path.stem}-patched.gguf\"")
                     error("then point the Modelfile FROM at the patched copy.")
                     die(1, pause=not auto)
-                die(1, pause=not auto)
 
     # If the tag already exists in Ollama, offer to skip the rebuild.
     if not auto:

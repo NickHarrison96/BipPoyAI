@@ -4,6 +4,7 @@ the LiteLLM proxy respectively. Everything that touches those file formats
 lives here so the GUI, TUI, and installer all agree on the schema.
 """
 
+import hashlib
 import os
 import re
 from dataclasses import dataclass, field, replace
@@ -14,6 +15,14 @@ from typing import Optional
 import settings
 
 VALID_ENGINE_MODES = ("direct", "litellm_standard", "litellm_chat")
+
+# Repo root, used to resolve the relative 'Models/<file>.gguf' form that
+# config.yaml stores against the real project directory instead of whatever
+# the current working directory happens to be.
+PROJECT_ROOT = Path(__file__).resolve().parent
+
+# Ollama refuses model names longer than 80 characters.
+MAX_TAG_LENGTH = 80
 
 
 @dataclass
@@ -71,24 +80,46 @@ def derive_model_tag(gguf_filename: str) -> str:
     Preserves the original case. Ollama tags are case-insensitive for matching
     but the HTTP API and `ollama list` preserve case, so a lowercased tag would
     not round-trip through the model dropdown. Only invalid characters are
-    replaced.
+    replaced. Ollama requires the first character to be alphanumeric, and
+    rejects names longer than 80 characters; over-long names are truncated with
+    a short hash of the full stem appended so two long-named models cannot
+    collide on the same tag.
     """
     stem = Path(gguf_filename).stem
-    return re.sub(r'[^a-zA-Z0-9._-]', '-', stem)
+    tag = re.sub(r'[^a-zA-Z0-9._-]', '-', stem)
+    tag = tag.lstrip("-._")
+    if not tag:
+        tag = "model"
+    if len(tag) > MAX_TAG_LENGTH:
+        digest = hashlib.sha256(stem.encode("utf-8")).hexdigest()[:6]
+        keep = MAX_TAG_LENGTH - len(digest) - 1
+        tag = f"{tag[:keep].rstrip('-._')}-{digest}"
+    return tag
 
 
 def modelfile_from_path(selected_gguf: str) -> str:
     """Render the Modelfile FROM value for a GGUF reference.
 
-    Repo-local files stay relative ('./Models/model.gguf') so the Modelfile
-    remains portable. Anything outside the working directory is written as an
-    absolute path with forward slashes, which Ollama accepts. Models usually
-    live in the Models/ subdirectory, so the relative case is the common one.
+    Always absolute, always forward slashes. Ollama on Windows cannot import a
+    local GGUF through a './Models/...' FROM line: it derives a model name from
+    the source string, the leading '.' fails name validation, and the server
+    answers with a misleading "Error: 400 Bad Request: invalid model name" that
+    looks like a problem with the chosen tag. An absolute path is accepted.
+
+    The Modelfile is a machine-local build artifact -- setup.py and the GUI
+    rewrite it whenever the selected model changes -- so an absolute path costs
+    nothing in portability.
     """
     p = Path(selected_gguf)
-    if p.is_absolute():
-        return p.as_posix()
-    return f"./Models/{p.name}"
+    if not p.is_absolute():
+        # A bare filename (no directory component) is the value the GUI dropdown
+        # passes; those files live in Models/. Anything with a directory part
+        # (e.g. 'Models/<file>') resolves against the project root directly.
+        if len(p.parts) == 1:
+            p = PROJECT_ROOT / "Models" / p
+        else:
+            p = PROJECT_ROOT / p
+    return p.as_posix()
 
 
 def coherence_issues(cfg: "ModelConfig", registered_tags=None, working_dir=None) -> list:

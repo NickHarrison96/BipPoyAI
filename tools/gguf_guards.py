@@ -29,6 +29,7 @@ The source file is never modified; --patch always writes elsewhere.
 """
 
 import re
+import struct
 import sys
 from pathlib import Path
 
@@ -37,6 +38,112 @@ OVERLAP = 128 * 1024
 
 # {{- raise_exception( ... ) }}  ->  {#- raise_exception( ... ) #}
 GUARD = re.compile(rb"\{\{-(?P<body>\s*raise_exception\(.*?\))\s*\}\}", re.DOTALL)
+
+# GGUF metadata may legitimately hold a chat template that is a few hundred KB,
+# but nothing anywhere near 16 MiB (the cap Ollama enforces). Tensor and
+# metadata key names are a handful of bytes. Anything beyond these bounds means
+# the parser has desynced from a corrupt or truncated file, not a real value.
+MAX_NAME = 4096
+MAX_STRING = 16 * 1024 * 1024
+
+
+class CorruptGGUF(Exception):
+    """The file is not a valid, complete GGUF."""
+
+
+def validate_gguf(path: Path) -> None:
+    """Raise CorruptGGUF if `path` is not a structurally valid GGUF.
+
+    A corrupt file (bad header, desynced metadata, or a garbage tensor-info
+    name/offset) is easy to mistake for a working model: a guard scan can still
+    find `raise_exception` text inside the chat template, and `--patch` will
+    happily copy the corruption and report success. Ollama then fails later
+    with a cryptic "error reading GGUF item ...". Catch it here instead.
+
+    The `gguf` package is used when available (authoritative); otherwise a
+    conservative structural walk validates the header, every metadata entry,
+    and every tensor info against the file's own length fields.
+    """
+    size = path.stat().st_size
+
+    try:
+        import gguf  # type: ignore
+    except ImportError:
+        gguf = None
+
+    if gguf is not None:
+        try:
+            gguf.GGUFReader(str(path))
+            return
+        except Exception as e:  # noqa: BLE001 - any failure here is corruption
+            raise CorruptGGUF(str(e)) from e
+
+    _validate_gguf_manual(path, size)
+
+
+def _validate_gguf_manual(path: Path, size: int) -> None:
+    """Dependency-free structural validation used when `gguf` is not installed."""
+    scalar_size = {0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 6: 4, 7: 1, 10: 8, 11: 8, 12: 8}
+
+    with open(path, "rb") as fh:
+        head = fh.read(24)
+        if len(head) != 24 or head[:4] != b"GGUF":
+            raise CorruptGGUF("missing or invalid GGUF magic header")
+        _, _, tensor_count, kv_count = struct.unpack("<4sIQQ", head)
+
+        def read(n: int) -> bytes:
+            b = fh.read(n)
+            if len(b) != n:
+                raise CorruptGGUF("file truncated (unexpected EOF)")
+            return b
+
+        for i in range(kv_count):
+            (klen,) = struct.unpack("<Q", read(8))
+            if klen > MAX_NAME:
+                raise CorruptGGUF(f"metadata key {i}: absurd name length {klen}")
+            read(klen)
+            (vtype,) = struct.unpack("<I", read(4))
+            if vtype not in scalar_size and vtype not in (8, 9):
+                raise CorruptGGUF(f"metadata key {i}: invalid value type {vtype}")
+            if vtype == 8:
+                (slen,) = struct.unpack("<Q", read(8))
+                if slen > MAX_STRING:
+                    raise CorruptGGUF(f"metadata key {i}: string length {slen} exceeds maximum")
+                read(slen)
+            elif vtype == 9:
+                (etype,) = struct.unpack("<I", read(4))
+                (count,) = struct.unpack("<Q", read(8))
+                if etype == 8:
+                    for _ in range(count):
+                        (slen,) = struct.unpack("<Q", read(8))
+                        if slen > MAX_STRING:
+                            raise CorruptGGUF(f"metadata key {i}: array string length {slen} exceeds maximum")
+                        read(slen)
+                else:
+                    esize = scalar_size.get(etype)
+                    if esize is None:
+                        raise CorruptGGUF(f"metadata key {i}: invalid array element type {etype}")
+                    if count * esize > size:
+                        raise CorruptGGUF(f"metadata key {i}: array larger than file")
+                    read(count * esize)
+            else:
+                read(scalar_size[vtype])
+
+        for i in range(tensor_count):
+            (nlen,) = struct.unpack("<Q", read(8))
+            if nlen < 1 or nlen > MAX_NAME:
+                raise CorruptGGUF(f"tensor {i}: absurd name length {nlen}")
+            read(nlen)
+            (ndims,) = struct.unpack("<I", read(4))
+            if ndims > 16:
+                raise CorruptGGUF(f"tensor {i}: absurd dimension count {ndims}")
+            read(8 * ndims)
+            (ttype,) = struct.unpack("<I", read(4))
+            if ttype > 63:
+                raise CorruptGGUF(f"tensor {i}: invalid tensor type {ttype}")
+            (offset,) = struct.unpack("<Q", read(8))
+            if offset > size:
+                raise CorruptGGUF(f"tensor {i}: offset {offset} beyond file size")
 
 
 def iter_guards(path: Path):
@@ -128,6 +235,14 @@ def main() -> int:
     print(f"model: {src}")
     print(f"size : {src.stat().st_size:,} bytes")
     print()
+
+    try:
+        validate_gguf(src)
+    except CorruptGGUF as e:
+        print(f"  ERROR: this file is not a valid GGUF ({e}).")
+        print("  It is likely truncated or corrupt. Re-download or re-export it")
+        print("  before scanning or patching; a patch of a corrupt file is itself corrupt.")
+        return 2
 
     if "--patch" in flags:
         if len(args) < 2:
