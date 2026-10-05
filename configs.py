@@ -65,19 +65,33 @@ def load_modelfile(path: Path) -> ModelConfig:
     if from_match:
         cfg.selected_gguf = from_match.group(1)
 
-    _int_param(content, r'num_ctx',     lambda v: setattr(cfg, "context_size", v))
     _int_param(content, r'num_gpu',     lambda v: setattr(cfg, "gpu_layers",   v))
     _int_param(content, r'num_thread',  lambda v: setattr(cfg, "cpu_threads",  v))
     _int_param(content, r'num_batch',   lambda v: setattr(cfg, "batch_size",   v))
     _float_param(content, r'temperature', lambda v: setattr(cfg, "temperature", v))
+    # num_ctx is deliberately NOT read here: context size is owned by
+    # config.yaml (see load_full). Older Modelfiles that still declare it are
+    # ignored so there is exactly one source of truth.
 
     return cfg
 
 
 def load_config_yaml(path: Path) -> dict:
-    """Extract engine_mode + model_tag + api_base from an existing config.yaml. Text-based
-    to avoid a PyYAML dependency for such a simple file."""
-    out = {"engine_mode": "litellm_chat", "model_tag": None, "ollama_url": None}
+    """Extract engine_mode + model_tag + api_base + inference sizing from an
+    existing config.yaml. Text-based to avoid a PyYAML dependency for such a
+    simple file.
+
+    config.yaml is the single source of truth for context_size and max_tokens:
+    those are per-request values that LiteLLM forwards on every call, so the
+    proxy config is the only place they need to live.
+    """
+    out = {
+        "engine_mode": "litellm_chat",
+        "model_tag": None,
+        "ollama_url": None,
+        "context_size": None,
+        "max_tokens": None,
+    }
     if not path.exists():
         return out
 
@@ -94,6 +108,9 @@ def load_config_yaml(path: Path) -> dict:
     if url_match:
         out["ollama_url"] = url_match.group(1)
 
+    _yaml_int(content, 'num_ctx', lambda v: out.__setitem__("context_size", v))
+    _yaml_int(content, 'max_tokens', lambda v: out.__setitem__("max_tokens", v))
+
     if "ollama_chat/" in content:
         out["engine_mode"] = "litellm_chat"
     elif "ollama/" in content:
@@ -105,8 +122,18 @@ def load_config_yaml(path: Path) -> dict:
 
 
 def load_full(working_dir: Path) -> ModelConfig:
-    """Merged view: Modelfile fields + config.yaml engine_mode/model_tag,
-    falling back to defaults for anything missing."""
+    """Merged view of the on-disk state.
+
+    Division of ownership:
+      Modelfile   — what the weights need baked in at `ollama create` time
+                    (selected GGUF, layer placement, threads, batch, temperature).
+      config.yaml — what the proxy forwards per request (context size, max tokens)
+                    plus routing (tag, api_base, engine mode).
+
+    context_size and max_tokens are read from config.yaml only. The Modelfile no
+    longer declares num_ctx, so there is a single place to read and write them and
+    the GUI round trip cannot silently revert a saved value.
+    """
     cfg = load_modelfile(working_dir / "Modelfile")
     y = load_config_yaml(working_dir / "config.yaml")
     if y["model_tag"]:
@@ -114,6 +141,10 @@ def load_full(working_dir: Path) -> ModelConfig:
     cfg.engine_mode = y["engine_mode"]
     if y.get("ollama_url"):
         cfg.ollama_base_url = y["ollama_url"]
+    if y.get("context_size"):
+        cfg.context_size = y["context_size"]
+    if y.get("max_tokens"):
+        cfg.max_tokens = y["max_tokens"]
 
     # If Modelfile didn't declare a GGUF, pick the first one on disk
     if not cfg.selected_gguf:
@@ -139,12 +170,23 @@ def _float_param(content: str, key: str, setter):
         setter(float(m.group(1)))
 
 
+def _yaml_int(content: str, key: str, setter) -> None:
+    """Read an integer from YAML `key: 123` syntax (config.yaml, not a Modelfile)."""
+    m = re.search(rf'^\s*{key}:\s*(\d+)\s*$', content, re.MULTILINE)
+    if m:
+        setter(int(m.group(1)))
+
+
 # ─── Writers ──────────────────────────────────────────────────────────────────
 
 MODELFILE_TEMPLATE = """FROM ./{gguf}
 
-# Hardware / VRAM / RAM allocation
-PARAMETER num_ctx {context_size}
+# Baked in at `ollama create` time. These are model-construction concerns: layer
+# placement, thread count, batch size. They have no per-request equivalent.
+#
+# Context size is intentionally absent: LiteLLM forwards num_ctx on every request
+# from config.yaml, so declaring it here created a second source of truth that
+# overwrote saved values on the next config rebuild.
 PARAMETER num_gpu {gpu_layers}
 PARAMETER num_thread {cpu_threads}
 PARAMETER num_batch {batch_size}
@@ -163,7 +205,6 @@ def write_modelfile(cfg: ModelConfig, path: Path) -> None:
     path.write_text(
         MODELFILE_TEMPLATE.format(
             gguf=cfg.selected_gguf,
-            context_size=cfg.context_size,
             gpu_layers=cfg.gpu_layers,
             cpu_threads=cfg.cpu_threads,
             batch_size=cfg.batch_size,

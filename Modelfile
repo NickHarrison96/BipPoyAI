@@ -1,7 +1,11 @@
 FROM ./Qwythos-9B-Claude-Mythos-5-1M-MTP-Q4_K_M.gguf
 
-# Hardware / VRAM / RAM allocation
-PARAMETER num_ctx 65536
+# Baked in at `ollama create` time. These are model-construction concerns: layer
+# placement, thread count, batch size. They have no per-request equivalent.
+#
+# Context size is intentionally absent: LiteLLM forwards num_ctx on every request
+# from config.yaml, so declaring it here created a second source of truth that
+# overwrote saved values on the next config rebuild.
 PARAMETER num_gpu 99
 PARAMETER num_thread 6
 PARAMETER num_batch 512

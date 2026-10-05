@@ -37,7 +37,9 @@ from configs import derive_model_tag
 DEFAULT_OLLAMA_BASE_URL = settings.DEFAULTS["ollama_base_url"]
 DEFAULT_LITELLM_BASE_URL = settings.DEFAULTS["litellm_base_url"]
 DEFAULT_LITELLM_API_KEY = settings.DEFAULTS["litellm_api_key"]
-DEFAULT_MODEL_TAG = "qwythos-9b-claude-mythos-5-1m-mtp-q4_k_m"
+# Fallback only — _resolve_model_tag() replaces this from config.yaml/Modelfile on
+# startup. Kept neutral so it does not name a model the user may not have.
+DEFAULT_MODEL_TAG = "local-model"
 
 
 def normalize_url(url: str) -> str:
@@ -65,6 +67,7 @@ class ChatWorker(QThread):
         model: str = DEFAULT_MODEL_TAG,
         temperature: float = 0.2,
         max_tokens: int = 8192,
+        num_ctx: int = 32768,
         engine_mode: str = "litellm_chat",
         ollama_base_url: str = DEFAULT_OLLAMA_BASE_URL,
         litellm_base_url: str = DEFAULT_LITELLM_BASE_URL,
@@ -76,6 +79,7 @@ class ChatWorker(QThread):
         self.model = model
         self.temperature = temperature
         self.max_tokens = max_tokens
+        self.num_ctx = num_ctx
         self.engine_mode = engine_mode
         self.ollama_base_url = normalize_url(ollama_base_url)
         self.litellm_base_url = normalize_url(litellm_base_url)
@@ -113,6 +117,9 @@ class ChatWorker(QThread):
                 "options": {
                     "temperature": self.temperature,
                     "num_predict": self.max_tokens,
+                    # Sent per request because the Modelfile no longer bakes in
+                    # num_ctx — config.yaml owns the configured context size.
+                    "num_ctx": self.num_ctx,
                 },
             }
 
@@ -660,7 +667,9 @@ class OllamaBackend(QObject):
             try:
                 content = config_path.read_text(encoding="utf-8")
                 tag_match = re.search(r'model_name:\s*([^\s]+)', content)
-                if tag_match and tag_match.group(1) != "*":
+                # config.yaml writes the wildcard quoted ("*"), so reject both forms
+                # — otherwise model_tag becomes the 3-character string '"*"'.
+                if tag_match and tag_match.group(1).strip('"') != "*":
                     self.model_tag = tag_match.group(1)
 
                 if "ollama_chat/" in content:
@@ -753,6 +762,7 @@ class OllamaBackend(QObject):
             model=self.model_tag,
             temperature=self.temperature,
             max_tokens=self.max_tokens,
+            num_ctx=self.num_ctx,
             engine_mode=self.engine_mode,
             ollama_base_url=self.ollama_base_url,
             litellm_base_url=self.litellm_base_url,

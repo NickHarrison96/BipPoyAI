@@ -467,6 +467,13 @@ class SettingsPanel(QFrame):
             if idx >= 0:
                 self.batch_combo.setCurrentIndex(idx)
 
+            # Seed from disk like every other field, otherwise Apply/Save would
+            # overwrite config.yaml's max_tokens with this combo's stale default.
+            val = str(cfg.max_tokens)
+            idx = self.max_tokens_combo.findText(val)
+            if idx >= 0:
+                self.max_tokens_combo.setCurrentIndex(idx)
+
             self.temp_spin.setValue(cfg.temperature)
 
             idx = self.engine_combo.findText(cfg.engine_mode)
@@ -566,8 +573,14 @@ class SettingsPanel(QFrame):
 
         model_tag = self.model_combo.currentText().strip() or self.backend.get_model_tag()
 
+        # Honour the GGUF the user actually selected; fall back to the only file
+        # on disk, then to alphabetical-first as a last resort.
+        chosen_gguf = self.gguf_combo.currentText().strip()
+        if chosen_gguf not in [g.name for g in gguf_files]:
+            chosen_gguf = gguf_files[0].name if len(gguf_files) == 1 else chosen_gguf or gguf_files[0].name
+
         cfg = ModelConfig(
-            selected_gguf=gguf_files[0].name,
+            selected_gguf=chosen_gguf,
             model_tag=model_tag,
             engine_mode=self.engine_combo.currentText(),
             context_size=int(self.ctx_combo.currentText()),
