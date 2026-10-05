@@ -11,6 +11,15 @@ if %errorlevel% neq 0 (
     exit /b 1
 )
 
+echo Checking dependencies...
+python -m pip install -r requirements.txt
+if %errorlevel% neq 0 (
+    echo.
+    echo [WARN] Could not install dependencies automatically.
+    echo If the app fails to start, run: pip install -r requirements.txt
+    echo.
+)
+
 python main.py %*
 if %errorlevel% neq 0 (
     echo.

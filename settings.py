@@ -9,6 +9,7 @@ No GUI or Qt imports here — safe to call from worker threads and the TUI.
 """
 
 import json
+import os
 from pathlib import Path
 
 SETTINGS_DIR = Path.home() / ".qwythos"
@@ -17,10 +18,8 @@ SETTINGS_FILE = SETTINGS_DIR / "settings.json"
 DEFAULTS = {
     "ollama_base_url": "http://127.0.0.1:11434",
     "litellm_base_url": "http://127.0.0.1:4000",
-    "litellm_api_key": "sk-ant-api03-local-mock-key-for-ollama-bypass-000000000000000000",
+    "litellm_api_key": os.environ.get("LITELLM_API_KEY", "sk-litellm-local"),
     "auto_start_litellm": "false",
-    # When true, child processes (LiteLLM proxy) start without a console window.
-    # Handy once the stack is known-good; you lose the live log on failure.
     "launch_silent": "false",
 }
 

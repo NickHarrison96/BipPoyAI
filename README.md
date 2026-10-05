@@ -21,7 +21,7 @@ User (Claude CLI or GUI chat)
   ← hosts the GGUF model (Qwythos-9B-Claude-Mythos-5-1M-MTP-Q4_K_M)
         │
         ▼
-  Qwythos-9B.gguf  (≈5.8 GB, local file)
+  Qwen3.5-9B-Heretic-patched2.gguf  (≈5.8 GB, local file)
 ```
 
 ## Features
@@ -37,7 +37,7 @@ User (Claude CLI or GUI chat)
 
 - **Python 3.11+** (ensure "Add python.exe to PATH" is checked)
 - **Ollama** installed and running (`ollama serve`) — https://ollama.com
-- **Model weights**: `Qwythos-9B-Claude-Mythos-5-1M-MTP-Q4_K_M.gguf` (approx 5.8 GB)
+- **Model weights**: `Qwen3.5-9B-Heretic-patched2.gguf` (approx 5.8 GB)
   Download: https://huggingface.co/empero-ai/Qwythos-9B-Claude-Mythos-5-1M
 - *(Optional)* **Claude CLI**: `npm install -g @anthropic-ai/claude-code`
 

@@ -4,7 +4,7 @@
 
 1. **Python 3.11+** installed and added to PATH (https://python.org)
 2. **Ollama** installed and running (`ollama serve`) — https://ollama.com
-3. **Model Weights** — Place `Qwythos-9B-Claude-Mythos-5-1M-MTP-Q4_K_M.gguf` in this folder
+3. **Model Weights** — Place `Qwen3.5-9B-Heretic-patched2.gguf` in this folder
 
 ---
 
@@ -25,7 +25,7 @@
    - Configure `Modelfile` and `config.yaml` based on detected hardware
    - Build the model in Ollama (`ollama create`)
    - Start the local LiteLLM proxy on port 4000
-   - Launch `claude --model qwythos-9b-claude-mythos-5-1m-mtp-q4_k_m`
+   - Launch `claude` (no --model flag; ANTHROPIC_MODEL is set automatically)
 3. Chat directly from your command line with Claude CLI talking to your offline Ollama model!
 
 ---

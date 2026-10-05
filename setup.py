@@ -16,6 +16,12 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
 
+if sys.version_info < (3, 11):
+    print("ERROR: Python 3.11 or newer is required.")
+    print(f"You are running Python {sys.version.split()[0]}.")
+    print("Download the latest version from https://python.org")
+    sys.exit(1)
+
 import configs
 import hardware
 import netutil
@@ -58,7 +64,7 @@ def ask(msg: str, default: bool = True) -> bool:
 
 
 def die(code: int = 0, pause: bool = True):
-    if pause:
+    if pause and sys.stdin.isatty():
         print(f"\n{C_GRAY}[!] Press Enter to close...{C_RESET}")
         try:
             input()
@@ -68,6 +74,48 @@ def die(code: int = 0, pause: bool = True):
 
 
 # ─── Stages ───────────────────────────────────────────────────────────────────
+
+def download_gguf(working_dir: Path, url: str, filename: str) -> bool:
+    """Download a GGUF file with a progress bar."""
+    import requests
+
+    dest = working_dir / filename
+    if dest.exists():
+        verbose(f"GGUF already exists: {filename}")
+        return True
+
+    print(f"\nDownloading {filename}...")
+    print(f"URL: {url}")
+    print("This is a large file. Please wait...\n")
+
+    try:
+        response = requests.get(url, stream=True, timeout=30)
+        response.raise_for_status()
+
+        total_size = int(response.headers.get('content-length', 0))
+        downloaded = 0
+        chunk_size = 8192
+
+        with open(dest, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=chunk_size):
+                if chunk:
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    if total_size > 0:
+                        percent = (downloaded / total_size) * 100
+                        mb = downloaded / (1024 * 1024)
+                        total_mb = total_size / (1024 * 1024)
+                        print(f"\r  {mb:.1f}/{total_mb:.1f} MB ({percent:.1f}%)", end='', flush=True)
+
+        print(f"\n\nDownload complete: {filename}")
+        return True
+
+    except Exception as e:
+        error(f"Download failed: {e}")
+        if dest.exists():
+            dest.unlink()
+        return False
+
 
 def stage_detect_gguf(working_dir: Path, auto: bool = False, requested_name: Optional[str] = None) -> Path:
     print(f"{C_HEADER}=== STAGE 1: GGUF File Check ==={C_RESET}")
@@ -79,7 +127,16 @@ def stage_detect_gguf(working_dir: Path, auto: bool = False, requested_name: Opt
             warn(f"Using previously configured model reference: {existing.selected_gguf}")
             return working_dir / existing.selected_gguf
         error(f"No .gguf files in {working_dir}")
-        error("Download the model weights first (e.g. Qwythos-9B-Claude-Mythos-5-1M-MTP-Q4_K_M.gguf).")
+        error("Download the model weights first (e.g. Qwen3.5-9B-Heretic-patched2.gguf).")
+        if auto or ask("Download the model now?", default=True):
+            url = "https://huggingface.co/empero-ai/Qwythos-9B-Claude-Mythos-5-1M/resolve/main/Qwythos-9B-Claude-Mythos-5-1M-MTP-Q4_K_M.gguf"
+            filename = "Qwythos-9B-Claude-Mythos-5-1M-MTP-Q4_K_M.gguf"
+            if download_gguf(working_dir, url, filename):
+                ggufs = list(working_dir.glob("*.gguf"))
+                if ggufs:
+                    success(f"Downloaded: {ggufs[0].name}")
+                    warn("Run 'python tools/gguf_guards.py' to patch the chat template before first use.")
+                    return ggufs[0]
         die(1, pause=not auto)
 
     if requested_name:

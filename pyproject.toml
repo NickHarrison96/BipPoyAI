@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bippoyai"
+version = "0.4.0"
+description = "Local-only AI desktop assistant — Ollama + LiteLLM + Heretic GUI"
+requires-python = ">=3.11"
+dependencies = [
+    "litellm==1.102.1",
+    "PySide6==6.11.1",
+    "requests==2.34.2",
+    "psutil==7.2.2",
+    "pynvml==13.0.1",
+    "ollama==0.6.2",
+]
+
+[project.scripts]
+bippoyai = "main:main"
+bippoyai-setup = "setup:main"
+bippoyai-config = "config:main"
+
+[tool.setuptools]
+py-modules = ["main", "backend", "configs", "settings", "hardware", "config", "history", "netutil", "styles", "widgets"]

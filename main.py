@@ -14,6 +14,13 @@ import os
 import re
 from pathlib import Path
 
+if sys.version_info < (3, 11):
+    print("ERROR: Python 3.11 or newer is required.")
+    print(f"You are running Python {sys.version.split()[0]}.")
+    print("Download the latest version from https://python.org")
+    input("Press Enter to exit...")
+    sys.exit(1)
+
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QTextEdit, QFrame, QScrollArea, QGroupBox, QLineEdit,
