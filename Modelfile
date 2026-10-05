@@ -8,9 +8,8 @@ FROM E:/Models/Qwen3.5-9B-Heretic/Qwen3.5-9B-Heretic-patched.gguf
 # overwrote saved values on the next config rebuild.
 PARAMETER num_gpu 99
 PARAMETER num_thread 6
-PARAMETER num_batch 1024
+PARAMETER num_batch 512
 PARAMETER temperature 0.6
-# tag: custom
 PARAMETER top_p 0.95
 PARAMETER top_k 20
 PARAMETER repeat_penalty 1.1

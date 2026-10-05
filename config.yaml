@@ -3,7 +3,7 @@ model_list:
     litellm_params:
       model: ollama_chat/qwythos-heretic
       api_base: http://127.0.0.1:11434
-      num_ctx: 32768
+      num_ctx: 65536
       max_tokens: 8192
       extra_body:
         think: false
@@ -11,7 +11,7 @@ model_list:
     litellm_params:
       model: ollama_chat/qwythos-heretic
       api_base: http://127.0.0.1:11434
-      num_ctx: 32768
+      num_ctx: 65536
       max_tokens: 8192
       extra_body:
         think: false
