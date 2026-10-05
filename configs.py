@@ -4,6 +4,7 @@ the LiteLLM proxy respectively. Everything that touches those file formats
 lives here so the GUI, TUI, and installer all agree on the schema.
 """
 
+import os
 import re
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -49,9 +50,23 @@ class ModelConfig:
 # ─── Tag derivation ───────────────────────────────────────────────────────────
 
 def derive_model_tag(gguf_filename: str) -> str:
-    """Turn a GGUF filename into a valid Ollama tag."""
+    """Turn a GGUF filename (or full path) into a valid Ollama tag."""
     stem = Path(gguf_filename).stem
     return re.sub(r'[^a-z0-9._-]', '-', stem.lower())
+
+
+def modelfile_from_path(selected_gguf: str) -> str:
+    """Render the Modelfile FROM value for a GGUF reference.
+
+    Repo-local files stay relative ('./model.gguf') so the Modelfile remains
+    portable. Anything outside the working directory is written as an absolute
+    path with forward slashes, which Ollama accepts. Models usually live on a
+    separate drive (e.g. E:\\Models), so the absolute case is the common one.
+    """
+    p = Path(selected_gguf)
+    if p.is_absolute():
+        return p.as_posix()
+    return f"./{p.name}"
 
 
 # ─── Parsers ──────────────────────────────────────────────────────────────────
@@ -67,9 +82,17 @@ def load_modelfile(path: Path) -> ModelConfig:
     except Exception:
         return cfg
 
-    from_match = re.search(r'^\s*FROM\s+\.\/([^\s]+)', content, re.MULTILINE)
+    from_match = re.search(r'^\s*FROM\s+(\S+)', content, re.MULTILINE)
     if from_match:
-        cfg.selected_gguf = from_match.group(1)
+        raw = from_match.group(1).strip().strip('"').strip("'")
+        # './model.gguf' is repo-local; anything else is an absolute path.
+        # Modelfiles must use forward slashes (Ollama requirement), so convert
+        # back to native separators here — that way a path chosen via a file
+        # dialog reads back exactly as it was selected.
+        if raw.startswith("./") or raw.startswith(".\\"):
+            cfg.selected_gguf = raw[2:]
+        else:
+            cfg.selected_gguf = os.path.normpath(raw)
 
     _int_param(content, r'num_gpu',     lambda v: setattr(cfg, "gpu_layers",   v))
     _int_param(content, r'num_thread',  lambda v: setattr(cfg, "cpu_threads",  v))
@@ -196,7 +219,7 @@ def _yaml_int(content: str, key: str, setter) -> None:
 
 # ─── Writers ──────────────────────────────────────────────────────────────────
 
-MODELFILE_TEMPLATE = """FROM ./{gguf}
+MODELFILE_TEMPLATE = """FROM {gguf_from}
 
 # Baked in at `ollama create` time. These are model-construction concerns: layer
 # placement, thread count, batch size. They have no per-request equivalent.
@@ -221,7 +244,7 @@ def write_modelfile(cfg: ModelConfig, path: Path) -> None:
         raise ValueError("Cannot write Modelfile: no GGUF file selected.")
     path.write_text(
         MODELFILE_TEMPLATE.format(
-            gguf=cfg.selected_gguf,
+            gguf_from=modelfile_from_path(cfg.selected_gguf),
             gpu_layers=cfg.gpu_layers,
             cpu_threads=cfg.cpu_threads,
             batch_size=cfg.batch_size,

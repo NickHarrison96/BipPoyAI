@@ -18,9 +18,10 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QPushButton, QTextEdit, QFrame, QScrollArea, QGroupBox, QLineEdit,
     QFormLayout, QComboBox, QSpinBox, QDoubleSpinBox,
-    QMessageBox, QFileDialog, QCheckBox, QSystemTrayIcon, QMenu,
-)
-from PySide6.QtCore import Qt, QTimer, QSize
+QMessageBox, QFileDialog, QCheckBox, QSystemTrayIcon, QMenu,
+      QSizePolicy,
+  )
+from PySide6.QtCore import Qt, QTimer, QSize, Signal
 from PySide6.QtGui import QKeyEvent, QShortcut, QKeySequence, QIcon, QPixmap, QPainter, QColor, QPen, QAction
 
 from styles import get_main_stylesheet, COLORS
@@ -231,13 +232,25 @@ class MessageBubble(QFrame):
 # ─── Settings Panel ──────────────────────────────────────────────────────────
 
 class SettingsPanel(QFrame):
-    """Sidebar panel with hardware/model configuration controls."""
+    """Sidebar panel with hardware/model configuration controls.
+
+    Width adapts to the window instead of being pinned: a fixed width meant the
+    form rows could not fit their labels and fields, so values were clipped and
+    the panel was only readable when maximised.
+    """
+
+    # Emitted when the user asks to re-create the Ollama model after a rebuild.
+    # MainWindow owns that flow (status banner + ModelManager), so the panel asks.
+    model_rebuild_requested = Signal()
 
     def __init__(self, backend: OllamaBackend, parent=None):
         super().__init__(parent)
         self.backend = backend
         self.setObjectName("settingsPanel")
-        self.setFixedWidth(340)
+        # Growable within limits so the form always has room for its labels.
+        self.setMinimumWidth(360)
+        self.setMaximumWidth(520)
+        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
@@ -260,10 +273,25 @@ class SettingsPanel(QFrame):
         self.model_combo.currentTextChanged.connect(self._on_model_changed)
         session_layout.addRow("Active Model:", self.model_combo)
 
-        # Multi-GGUF selector — lists all .gguf files in the project directory
+        # Multi-GGUF selector — repo-local files listed, plus a browser for
+        # models that live on another drive (the common case).
         self.gguf_combo = QComboBox()
+        self.gguf_combo.setEditable(True)
+        self.gguf_combo.setInsertPolicy(QComboBox.NoInsert)
         self.gguf_combo.currentTextChanged.connect(self._on_gguf_changed)
-        session_layout.addRow("GGUF File:", self.gguf_combo)
+
+        browse_btn = QPushButton("Browse…")
+        browse_btn.setObjectName("secondaryButton")
+        browse_btn.setFixedWidth(90)
+        browse_btn.clicked.connect(self._browse_for_gguf)
+
+        gguf_row = QWidget()
+        gguf_row.setObjectName("settingsPanel")
+        gguf_row_layout = QHBoxLayout(gguf_row)
+        gguf_row_layout.setContentsMargins(0, 0, 0, 0)
+        gguf_row_layout.addWidget(self.gguf_combo, 1)
+        gguf_row_layout.addWidget(browse_btn, 0)
+        session_layout.addRow("GGUF File:", gguf_row)
         self._refresh_gguf_list()
 
         self.system_prompt_edit = QTextEdit()
@@ -372,13 +400,24 @@ class SettingsPanel(QFrame):
         apply_btn.clicked.connect(self._apply_settings)
         layout.addWidget(apply_btn)
 
-        save_btn = QPushButton("💾  Save && Rebuild Configs")
+        save_btn = QPushButton("💾  Save & Rebuild Configs")
         save_btn.setToolTip(
             "Regenerate Modelfile and config.yaml with current settings.\n"
             "You'll need to re-create the Ollama model for hardware changes to take effect."
         )
         save_btn.clicked.connect(self._save_and_rebuild)
         layout.addWidget(save_btn)
+
+        # Unsaved-changes marker. Every control that feeds a ModelConfig reports
+        # edits here so it is obvious when on-disk configs are stale.
+        self.dirty_label = QLabel("")
+        self.dirty_label.setObjectName("dangerButton")
+        self.dirty_label.setAlignment(Qt.AlignCenter)
+        self.dirty_label.setVisible(False)
+        layout.addWidget(self.dirty_label)
+
+        self._form_widgets = []
+        self._baseline = {}
 
         layout.addStretch()
 
@@ -391,21 +430,57 @@ class SettingsPanel(QFrame):
         # Load saved settings from disk
         self._load_from_configs()
 
+        # Start watching for edits only once the widgets hold their loaded
+        # values, otherwise every field reads as a pending change on startup.
+        self._watch_for_changes()
+        self._reset_dirty()
+
     def _refresh_gguf_list(self):
-        """Populate the GGUF selector with all .gguf files in the project directory."""
+        """Populate the GGUF selector with repo-local files, then re-select whatever
+        the config already points at (which may be an absolute path elsewhere)."""
         working_dir = Path(self.backend.working_dir)
         ggufs = sorted(f.name for f in working_dir.glob("*.gguf"))
         current_cfg = load_full(working_dir)
 
         self.gguf_combo.blockSignals(True)
         self.gguf_combo.clear()
-        if not ggufs:
-            self.gguf_combo.addItem("(no .gguf files found)")
-        else:
-            self.gguf_combo.addItems(ggufs)
-            if current_cfg.selected_gguf and current_cfg.selected_gguf in ggufs:
-                self.gguf_combo.setCurrentText(current_cfg.selected_gguf)
+        self.gguf_combo.addItems(ggufs)
+        current = current_cfg.selected_gguf
+        if current:
+            # Keep the configured selection visible even when the file is not in
+            # the project directory — otherwise it looks like nothing is selected.
+            if current not in ggufs:
+                self.gguf_combo.addItem(current)
+            self.gguf_combo.setCurrentText(current)
+        elif not ggufs:
+            self.gguf_combo.addItem("(no .gguf found — click Browse…)")
+            self.gguf_combo.setCurrentIndex(0)
         self.gguf_combo.blockSignals(False)
+
+    def _browse_for_gguf(self):
+        """Pick a GGUF from anywhere on disk (models often live on another drive)."""
+        working_dir = Path(self.backend.working_dir)
+        start_dir = working_dir
+        current = load_full(working_dir).selected_gguf
+        if current:
+            candidate = Path(current)
+            if candidate.is_absolute() and candidate.parent.is_dir():
+                start_dir = candidate.parent
+
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select GGUF model file",
+            str(start_dir),
+            "GGUF models (*.gguf);;All files (*)",
+        )
+        if not path:
+            return
+
+        self.gguf_combo.blockSignals(True)
+        self.gguf_combo.addItem(path)
+        self.gguf_combo.setCurrentText(path)
+        self.gguf_combo.blockSignals(False)
+        self._on_gguf_changed(path)
 
     def _on_gguf_changed(self, filename: str):
         """Switch to a different GGUF: derive tag, rebuild configs, hot-swap backend."""
@@ -561,23 +636,89 @@ class SettingsPanel(QFrame):
             "auto_start_litellm": "true" if self.auto_litellm_check.isChecked() else "false",
         })
 
+    def _watch_for_changes(self):
+        """Mark the panel dirty when any control that feeds a ModelConfig changes."""
+        # findChildren takes a single type per call, so gather from each.
+        seen = []
+        for cls in (QComboBox, QSpinBox, QDoubleSpinBox, QLineEdit):
+            for w in self.findChildren(cls):
+                if w not in seen:
+                    seen.append(w)
+
+        for w in seen:
+            if w is self.gguf_combo:
+                continue  # its own handler already rebuilds configs on change
+            self._form_widgets.append(w)
+            for sig in ("currentTextChanged", "valueChanged", "textChanged", "toggled"):
+                if hasattr(w, sig):
+                    getattr(w, sig).connect(self._mark_dirty)
+                    break
+        # The GGUF combo triggers a rebuild on change, but still counts as a
+        # pending edit the user should see flagged.
+        self.gguf_combo.currentTextChanged.connect(self._mark_dirty)
+
+    def _form_values(self) -> dict:
+        """Snapshot of every tracked control's current value."""
+        vals = {}
+        for w in self._form_widgets:
+            name = f"{type(w).__name__}@{w.objectName() or id(w)}"
+            if isinstance(w, (QComboBox,)):
+                vals[name] = ("combo", w.currentText())
+            elif isinstance(w, (QSpinBox, QDoubleSpinBox)):
+                vals[name] = ("num", w.value())
+            elif isinstance(w, QLineEdit):
+                vals[name] = ("text", w.text())
+        vals["gguf"] = ("combo", self.gguf_combo.currentText())
+        return vals
+
+    def _mark_dirty(self, *_args):
+        self._refresh_dirty()
+
+    def _reset_dirty(self):
+        self._baseline = self._form_values()
+        self._refresh_dirty()
+
+    def _refresh_dirty(self):
+        try:
+            current = self._form_values()
+        except RuntimeError:
+            return  # widget torn down
+        changed = current != self._baseline
+        self.dirty_label.setText("[!]  Unsaved changes" if changed else "")
+        self.dirty_label.setVisible(changed)
+
     def _save_and_rebuild(self):
         """Regenerate Modelfile and config.yaml using the configs module."""
         working_dir = Path(self.backend.working_dir)
 
-        # Find GGUF file
-        gguf_files = list(working_dir.glob("*.gguf"))
-        if not gguf_files:
-            QMessageBox.warning(self, "Error", "No .gguf file found in the model directory.")
-            return
-
         model_tag = self.model_combo.currentText().strip() or self.backend.get_model_tag()
 
-        # Honour the GGUF the user actually selected; fall back to the only file
-        # on disk, then to alphabetical-first as a last resort.
+        # The selected GGUF may be repo-local or an absolute path chosen via
+        # Browse (models usually live on another drive), so validate it rather
+        # than requiring a .gguf in the project directory.
         chosen_gguf = self.gguf_combo.currentText().strip()
-        if chosen_gguf not in [g.name for g in gguf_files]:
-            chosen_gguf = gguf_files[0].name if len(gguf_files) == 1 else chosen_gguf or gguf_files[0].name
+        if not chosen_gguf or chosen_gguf.startswith("("):
+            chosen_gguf = load_full(working_dir).selected_gguf or ""
+
+        if not chosen_gguf:
+            QMessageBox.warning(
+                self, "No model selected",
+                "No GGUF model is selected.\n\n"
+                "Click Browse… to choose a .gguf file, which may live outside "
+                "this project folder."
+            )
+            return
+
+        gguf_path = Path(chosen_gguf)
+        if not gguf_path.is_absolute():
+            gguf_path = working_dir / gguf_path
+        if not gguf_path.exists():
+            QMessageBox.warning(
+                self, "Model file not found",
+                f"Cannot find the selected model file:\n\n{gguf_path}\n\n"
+                "It may have been moved or renamed. Click Browse… to reselect it."
+            )
+            return
 
         cfg = ModelConfig(
             selected_gguf=chosen_gguf,
@@ -600,17 +741,31 @@ class SettingsPanel(QFrame):
             QMessageBox.critical(self, "Save Failed", str(e))
             return
 
+        # Point the session at the tag we just wrote before creating it, so the
+        # rebuild targets the selected model rather than whatever the dropdown
+        # happened to be showing.
+        self.backend.set_model_tag(cfg.model_tag)
+        self.model_combo.setCurrentText(cfg.model_tag)
+        self.info_label.setText(f"Model: {cfg.model_tag}")
+
         # Apply inference settings to the running session too
         self._apply_settings()
+        self._reset_dirty()
 
-        QMessageBox.information(
+        # Previously this only rewrote the two files and left the old model
+        # serving. Actually re-create it so hardware changes take effect.
+        rebuild = QMessageBox.question(
             self,
-            "Saved",
-            "Modelfile and config.yaml have been rebuilt.\n\n"
-            "If you changed hardware settings (GPU layers, threads, batch),\n"
-            "you'll need to click 'Install Model' in the status bar to\n"
-            "re-create the Ollama model with the new settings."
+            "Rebuild model now?",
+            f"Configs written for model '{cfg.model_tag}'.\n\n"
+            "Re-create it in Ollama now?\n\n"
+            "(Hardware settings such as GPU layers and context are baked into\n"
+            "the model at create time, so this is needed for them to apply.)",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
         )
+        if rebuild == QMessageBox.Yes:
+            self.model_rebuild_requested.emit()
 
 
 # ─── Main Window ─────────────────────────────────────────────────────────────
@@ -715,6 +870,7 @@ class MainWindow(QMainWindow):
         # ── Settings Panel (right sidebar) ──
         self.settings_panel = SettingsPanel(self.backend)
         self.settings_panel.setVisible(False)  # hidden by default
+        self.settings_panel.model_rebuild_requested.connect(self._install_model)
         main_layout.addWidget(self.settings_panel)
 
         # Push backdrop to the very back, scanlines float above it but below content
