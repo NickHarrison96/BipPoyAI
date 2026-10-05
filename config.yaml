@@ -5,12 +5,16 @@ model_list:
       api_base: http://127.0.0.1:11434
       num_ctx: 32768
       max_tokens: 8192
+      extra_body:
+        think: false
   - model_name: "*"
     litellm_params:
       model: ollama_chat/qwythos-heretic
       api_base: http://127.0.0.1:11434
       num_ctx: 32768
       max_tokens: 8192
+      extra_body:
+        think: false
 
 litellm_settings:
   drop_params: true

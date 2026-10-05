@@ -29,6 +29,12 @@ class ModelConfig:
     temperature: float = 0.2
     max_tokens: int = 8192
 
+    # Reasoning models emit a `thinking` block before any text. Left enabled,
+    # the whole output budget can be consumed by reasoning and the response
+    # arrives with zero text — which Claude Code reports as a truncated or empty
+    # stream. Default off so answers actually arrive.
+    thinking: bool = False
+
     # LiteLLM proxy addressing (defaults synced with settings.json)
     litellm_url: str = field(default_factory=lambda: settings.load()["litellm_base_url"])
     litellm_api_key: str = field(default_factory=lambda: settings.load()["litellm_api_key"])
@@ -91,6 +97,7 @@ def load_config_yaml(path: Path) -> dict:
         "ollama_url": None,
         "context_size": None,
         "max_tokens": None,
+        "thinking": None,
     }
     if not path.exists():
         return out
@@ -110,6 +117,7 @@ def load_config_yaml(path: Path) -> dict:
 
     _yaml_int(content, 'num_ctx', lambda v: out.__setitem__("context_size", v))
     _yaml_int(content, 'max_tokens', lambda v: out.__setitem__("max_tokens", v))
+    _yaml_bool(content, 'think', lambda v: out.__setitem__("thinking", v))
 
     if "ollama_chat/" in content:
         out["engine_mode"] = "litellm_chat"
@@ -145,6 +153,8 @@ def load_full(working_dir: Path) -> ModelConfig:
         cfg.context_size = y["context_size"]
     if y.get("max_tokens"):
         cfg.max_tokens = y["max_tokens"]
+    if y.get("thinking") is not None:
+        cfg.thinking = y["thinking"]
 
     # If Modelfile didn't declare a GGUF, pick the first one on disk
     if not cfg.selected_gguf:
@@ -168,6 +178,13 @@ def _float_param(content: str, key: str, setter):
     m = re.search(rf'^\s*PARAMETER\s+{key}\s+([\d.]+)', content, re.MULTILINE)
     if m:
         setter(float(m.group(1)))
+
+
+def _yaml_bool(content: str, key: str, setter) -> None:
+    """Read a boolean from YAML `key: true` syntax (config.yaml)."""
+    m = re.search(rf'^\s*{key}:\s*(true|false)\s*$', content, re.MULTILINE | re.IGNORECASE)
+    if m:
+        setter(m.group(1).lower() == "true")
 
 
 def _yaml_int(content: str, key: str, setter) -> None:
@@ -221,12 +238,16 @@ CONFIG_YAML_TEMPLATE = """model_list:
       api_base: {ollama_url}
       num_ctx: {context_size}
       max_tokens: {max_tokens}
+      extra_body:
+        think: {thinking}
   - model_name: "*"
     litellm_params:
       model: {prefix}{tag}
       api_base: {ollama_url}
       num_ctx: {context_size}
       max_tokens: {max_tokens}
+      extra_body:
+        think: {thinking}
 
 litellm_settings:
   drop_params: true
@@ -251,6 +272,7 @@ def write_config_yaml(cfg: ModelConfig, path: Path) -> None:
             ollama_url=cfg.ollama_base_url,
             context_size=cfg.context_size,
             max_tokens=cfg.max_tokens,
+            thinking="true" if cfg.thinking else "false",
         ),
         encoding="utf-8",
     )
