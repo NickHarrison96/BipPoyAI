@@ -112,6 +112,44 @@ that emits no comments, so any note added there is lost on the next rebuild.
 
 ---
 
+### Chat-template guards can abort requests
+
+A GGUF's chat template may ship `raise_exception` guards such as
+
+```
+{{- raise_exception('No user query found in messages.') }}
+```
+
+These abort rendering for message shapes the template does not expect and surface
+as an opaque `500 ... Ollama_chatException ... While executing CallExpression`,
+which reads like a proxy fault. The common trigger is a **tool-result turn**:
+after a tool call the trailing message is a `tool_result`, not user text, so a
+template looking for a user query to frame the response finds none. Small prompts
+pass; reading a file does not.
+
+Check any model before using it:
+
+```
+python tools/gguf_guards.py <model.gguf>              # report
+python tools/gguf_guards.py <model.gguf> --patch out.gguf
+```
+
+Patching rewrites each guard to an equal-length Jinja comment (`{{-` → `{#-`,
+`}}` → `#}`), so the template's byte length and every later offset are unchanged
+and the GGUF metadata stays valid. `setup.py` refuses to build from a GGUF with
+live guards.
+
+**After `ollama create`, restart Ollama or force-unload the model.** A rebuild
+writes a new manifest, but an already-loaded runner keeps serving the previous
+weights until it unloads — so the fix appears not to work.
+
+### No wildcard in config.yaml
+
+`model_list` must contain only the exact model tag. An earlier `model_name: "*"`
+entry routed *every* requested name to that model, so selecting a different model
+in the UI or the Claude Model field silently served the wrong weights while the
+UI showed the requested name. A wrong name now fails with HTTP 400 instead.
+
 ## Design System
 
 ### Visual Theme: Pip-Boy

@@ -379,14 +379,6 @@ CONFIG_YAML_TEMPLATE = """model_list:
       max_tokens: {max_tokens}
       extra_body:
         think: {thinking}
-  - model_name: "*"
-    litellm_params:
-      model: {prefix}{tag}
-      api_base: {ollama_url}
-      num_ctx: {context_size}
-      max_tokens: {max_tokens}
-      extra_body:
-        think: {thinking}
 
 litellm_settings:
   drop_params: true

@@ -176,6 +176,29 @@ def stage_build_ollama(working_dir: Path, cfg: configs.ModelConfig, auto: bool =
                 error(f"Modelfile FROM source not found: {from_src}")
                 error("Ollama 0.34+ returns a misleading 'invalid model name' error for missing files.")
                 error("Place the .gguf file in the project directory, or edit Modelfile to point at a valid source.")
+            elif src_path.suffix.lower() == ".gguf":
+                # A chat template with live raise_exception guards will abort
+                # mid-conversation (HTTP 500) on tool-result turns, which reads
+                # as a proxy fault rather than a model fault. Catch it at build
+                # time instead of at 3am.
+                try:
+                    sys.path.insert(0, str(working_dir / "tools"))
+                    import gguf_guards
+                    live = sum(
+                        1 for _, line in gguf_guards.iter_guards(src_path)
+                        if not line.startswith("{#")
+                    )
+                except Exception as e:
+                    warn(f"Could not inspect chat template guards ({e}); continuing.")
+                    live = 0
+                if live:
+                    error(f"{src_path.name} has {live} live raise_exception guard(s) in its chat template.")
+                    error("These abort rendering on some message shapes (notably tool results),")
+                    error("which surfaces as: 500 ... Ollama_chatException ... CallExpression")
+                    error("")
+                    error(f"  python tools/gguf_guards.py \"{src_path}\" --patch \"{src_path.stem}-patched.gguf\"")
+                    error("then point the Modelfile FROM at the patched copy.")
+                    die(1, pause=not auto)
                 die(1, pause=not auto)
 
     # If the tag already exists in Ollama, offer to skip the rebuild.

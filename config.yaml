@@ -1,15 +1,7 @@
 model_list:
-  - model_name: qwythos-heretic
+  - model_name: qwen3.5-2b-uncensored-hauhaucs-aggressive-bf16
     litellm_params:
-      model: ollama_chat/qwythos-heretic
-      api_base: http://127.0.0.1:11434
-      num_ctx: 65536
-      max_tokens: 8192
-      extra_body:
-        think: false
-  - model_name: "*"
-    litellm_params:
-      model: ollama_chat/qwythos-heretic
+      model: ollama_chat/qwen3.5-2b-uncensored-hauhaucs-aggressive-bf16
       api_base: http://127.0.0.1:11434
       num_ctx: 65536
       max_tokens: 8192
