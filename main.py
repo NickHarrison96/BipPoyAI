@@ -243,6 +243,9 @@ class SettingsPanel(QFrame):
     # MainWindow owns that flow (status banner + ModelManager), so the panel asks.
     model_rebuild_requested = Signal()
 
+    # Emitted when the panel's own Launch Claude CLI button is pressed.
+    launch_claude_requested = Signal()
+
     def __init__(self, backend: OllamaBackend, parent=None):
         super().__init__(parent)
         self.backend = backend
@@ -387,6 +390,43 @@ class SettingsPanel(QFrame):
         conn_layout.addRow("", self.auto_litellm_check)
 
         layout.addWidget(conn_group)
+
+        # ── Claude CLI ──
+        claude_group = QGroupBox("Claude CLI")
+        claude_layout = QFormLayout(claude_group)
+        claude_layout.setSpacing(8)
+        claude_layout.setContentsMargins(12, 20, 12, 12)
+
+        self.claude_model_edit = QLineEdit()
+        self.claude_model_edit.setPlaceholderText("qwythos-heretic")
+        self.claude_model_edit.setToolTip(
+            "Model name Claude Code requests via ANTHROPIC_MODEL.\n"
+            "Claude Code rejects unknown names in --model, so this is set by\n"
+            "environment variable instead. LiteLLM's \"*\" wildcard routes any name."
+        )
+        claude_layout.addRow("Claude Model:", self.claude_model_edit)
+
+        self.thinking_check = QCheckBox("Enable model thinking")
+        self.thinking_check.setToolTip(
+            "Off (recommended): the model answers directly.\n"
+            "On: the model emits a reasoning block first and can spend the whole\n"
+            "output budget on it, leaving no text in the response."
+        )
+        claude_layout.addRow("", self.thinking_check)
+
+        self.silent_launch_check = QCheckBox("Launch services silently")
+        self.silent_launch_check.setToolTip(
+            "Hide the LiteLLM console window when starting the proxy.\n"
+            "Turn off if you want to watch its log while troubleshooting."
+        )
+        claude_layout.addRow("", self.silent_launch_check)
+
+        claude_btn = QPushButton("⚡  Launch Claude CLI")
+        claude_btn.setObjectName("secondaryButton")
+        claude_btn.clicked.connect(self.launch_claude_requested.emit)
+        claude_layout.addRow("", claude_btn)
+
+        layout.addWidget(claude_group)
 
         # ── Actions ──
         auto_btn = QPushButton("🔍  Auto-detect Hardware")
@@ -559,6 +599,9 @@ class SettingsPanel(QFrame):
                 self.model_combo.setCurrentText(cfg.model_tag)
                 self.info_label.setText(f"Model: {cfg.model_tag}")
 
+            # Thinking is owned by config.yaml (extra_body.think).
+            self.thinking_check.setChecked(bool(cfg.thinking))
+
             self.system_prompt_edit.setText(self.backend.get_system_prompt())
 
             # Connection endpoints live in settings.json, not Modelfile/config.yaml
@@ -568,9 +611,17 @@ class SettingsPanel(QFrame):
             self.ollama_url_edit.setText(conn["ollama_base_url"])
 
             import settings as app_settings
+            loaded = app_settings.load()
             self.auto_litellm_check.setChecked(
-                app_settings.load().get("auto_start_litellm", "false") == "true"
+                app_settings.is_true(loaded.get("auto_start_litellm"))
             )
+            self.silent_launch_check.setChecked(
+                app_settings.is_true(loaded.get("launch_silent"))
+            )
+            # Default the Claude model field to the configured tag so the common
+            # case needs no typing.
+            if not self.claude_model_edit.text():
+                self.claude_model_edit.setText(self.backend.get_model_tag())
         except Exception as e:
             print(f"[SettingsPanel] Failed to load configs: {e}")
 
@@ -630,10 +681,11 @@ class SettingsPanel(QFrame):
             litellm_api_key=self.litellm_key_edit.text(),
         )
 
-        # Persist auto-start preference
+        # Persist auto-start + silent-launch preferences
         import settings as app_settings
         app_settings.save({
-            "auto_start_litellm": "true" if self.auto_litellm_check.isChecked() else "false",
+            "auto_start_litellm": app_settings.to_flag(self.auto_litellm_check.isChecked()),
+            "launch_silent": app_settings.to_flag(self.silent_launch_check.isChecked()),
         })
 
     def _watch_for_changes(self):
@@ -730,6 +782,7 @@ class SettingsPanel(QFrame):
             batch_size=int(self.batch_combo.currentText()),
             temperature=self.temp_spin.value(),
             max_tokens=int(self.max_tokens_combo.currentText()),
+            thinking=self.thinking_check.isChecked(),
             litellm_url=self.litellm_url_edit.text() or "http://127.0.0.1:4000",
             litellm_api_key=self.litellm_key_edit.text() or "",
             ollama_base_url=self.ollama_url_edit.text() or "http://127.0.0.1:11434",
@@ -871,6 +924,7 @@ class MainWindow(QMainWindow):
         self.settings_panel = SettingsPanel(self.backend)
         self.settings_panel.setVisible(False)  # hidden by default
         self.settings_panel.model_rebuild_requested.connect(self._install_model)
+        self.settings_panel.launch_claude_requested.connect(self._launch_claude_cli)
         main_layout.addWidget(self.settings_panel)
 
         # Push backdrop to the very back, scanlines float above it but below content
@@ -1314,13 +1368,21 @@ class MainWindow(QMainWindow):
             return
 
         import subprocess as _subprocess
-        model = self.backend.get_model_tag()
+        # Prefer the panel's Claude Model field so it can be overridden without
+        # editing the config; fall back to the active model tag.
+        claude_model = ""
+        panel = getattr(self, "settings_panel", None)
+        if panel is not None:
+            claude_model = panel.claude_model_edit.text().strip()
+        if not claude_model:
+            claude_model = self.backend.get_model_tag()
+
         env = os.environ.copy()
         env["ANTHROPIC_BASE_URL"] = self.backend.litellm_base_url
         env["ANTHROPIC_AUTH_TOKEN"] = "sk-litellm-local"
         env["ANTHROPIC_API_KEY"] = ""
         env["CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS"] = "1"
-        env["ANTHROPIC_MODEL"] = model
+        env["ANTHROPIC_MODEL"] = claude_model
         try:
             # No --model flag: Claude Code validates model names against its own
             # known list and stalls on local Ollama tags. ANTHROPIC_MODEL above
