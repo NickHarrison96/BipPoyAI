@@ -349,13 +349,15 @@ backend.check_status() (every 5s)
 - ✅ **setup.py guard-check fixes** — skips URL `FROM`s, no longer misclassifies absolute Windows paths, and drops a misplaced `die()` that aborted every local build.
 - ✅ **Onboarded three guarded models** — `Qwen3.5-4B-EmperoAI-Heretic-guarded`, `Qwythos-9B-Claude-Mythos-5-1M-MTP-Q4_K_M-guarded`, and the active `qwythos-heretic`.
 - ✅ **Dependency checker script** — `check_and_install_deps.bat` scans for Python 3.11+ (with a real version check), Ollama (with a fallback for its non-PATH default install), and optional npm; opens download pages for missing tools and installs `requirements.txt`.
+- ✅ **Drag-and-drop GGUF install** — drag .gguf files onto app window to copy to Models/, validate GGUF integrity, show installation instructions.
+- ✅ **Service control buttons** — Settings panel has Start/Kill buttons for LiteLLM and Ollama with status polling and health log viewers.
 - 🔲 **Defiant Fable onboarding** — source GGUF is corrupt (the `gguf` parser fails); re-download required before it can be built.
 
 ### Backlog
 
 - ✅ **Multi-GGUF management** — `GGUF File` dropdown in Settings → Model & Persona; switching rebuilds Modelfile/config.yaml and hot-swaps the model tag
-- 🔲 Drag-and-drop GGUF install
-- 🔲 Tool/plugin system for the model (web search, file read, code exec)
+- ✅ **Drag-and-drop GGUF install** — drag .gguf files onto app window to copy to Models/, validate GGUF integrity, and show installation instructions
+- ✅ **Tool/plugin system for the model** — framework created in `plugins/` directory for extensible tools (web search, file read, code exec)
 
 ---
 

@@ -1,51 +1,33 @@
 """
 Machine-local model bookkeeping that is deliberately not committed.
 
-Everything lives under the gitignored `.state/` directory next to the tracked
-configs:
+Two kinds of state are tracked:
 
   .state/external_paths.json   filename -> absolute path of a GGUF that sits
                                OUTSIDE the project (on another drive). Keeps the
-                               tracked configs portable: they store the bare
-                               filename, this file remembers where the bytes are
-                               on this machine.
+                               configs portable: they store the bare filename,
+                               this file remembers where the bytes are on this
+                               machine.
 
-  .state/models.json           filename -> the Ollama tag and inference/hardware
-                               fields tuned for that model. Switching models
-                               restores its own tag/context/temperature/etc.
-                               instead of reusing the previous model's values.
+  Models/<stem>/               a folder per model, holding that model's own
+                               Modelfile + config.yaml. Selecting a .gguf swaps
+                               these into the active root files; a model with no
+                               folder yet gets one created. Because the folder
+                               lives under Models/, it is machine-local and never
+                               committed.
 
-Neither file is part of the repo. Everything else — the model definition and
-the proxy routing — stays in the project directory and is owned by configs.py.
+The root Modelfile / config.yaml are the *active* files Ollama and LiteLLM read;
+the per-model folders are the source they are swapped from.
 """
 
 import json
+import shutil
 from pathlib import Path
 from typing import Dict
 
 PROJECT_ROOT = Path(__file__).resolve().parent
-MODELS_DIR = PROJECT_ROOT / "Models"
 STATE_DIR = PROJECT_ROOT / ".state"
 EXTERNAL_FILE = STATE_DIR / "external_paths.json"
-SETTINGS_FILE = STATE_DIR / "models.json"
-
-# Clean defaults used when a model has no saved settings yet. Mirrors
-# configs.ModelConfig so a freshly-added model does not inherit the previous
-# model's tuning. `tag` is None to mean "derive from the filename".
-DEFAULT_MODEL_SETTINGS = {
-    "tag": None,
-    "context_size": 32768,
-    "max_tokens": 8192,
-    "temperature": 0.2,
-    "gpu_layers": 99,
-    "cpu_threads": 6,
-    "batch_size": 512,
-    "top_p": None,
-    "top_k": None,
-    "repeat_penalty": None,
-    "thinking": False,
-    "system_prompt": "",
-}
 
 
 def _load_json(path: Path) -> dict:
@@ -141,27 +123,37 @@ def canonicalize(selected_gguf: str) -> str:
     return p.as_posix()
 
 
-# ─── Per-model settings ───────────────────────────────────────────────────────
+# ─── Per-model config folders ─────────────────────────────────────────────────
 
-def model_settings(filename: str) -> Dict[str, object]:
-    """Saved tuning for a GGUF filename (empty if never configured).
-
-    Keyed by filename, not tag: the weights are the stable identity. The tag is
-    itself a setting, so a model installed under a custom tag (e.g. `qwythos-heretic`
-    for `Qwen3.5-9B-Heretic-patched2.gguf`) keeps it when you switch back.
-    """
-    data = _load_json(SETTINGS_FILE)
-    entry = data.get(filename)
-    return entry if isinstance(entry, dict) else {}
+def model_folder(stem: str, working_dir=None) -> Path:
+    """The folder inside Models/ that holds a model's own config.yaml + Modelfile."""
+    base = Path(working_dir) if working_dir else PROJECT_ROOT
+    return base / "Models" / stem
 
 
-def remember_model_settings(filename: str, settings: Dict[str, object]) -> None:
-    """Persist the tuned fields for a GGUF filename."""
-    data = _load_json(SETTINGS_FILE)
-    data[filename] = settings
-    _save_json(SETTINGS_FILE, data)
+def _model_files(stem: str, working_dir=None):
+    folder = model_folder(stem, working_dir)
+    return folder / "Modelfile", folder / "config.yaml"
 
 
-def default_settings() -> Dict[str, object]:
-    """A copy of the clean defaults (mutating the returned dict is safe)."""
-    return dict(DEFAULT_MODEL_SETTINGS)
+def has_model_config(stem: str, working_dir=None) -> bool:
+    """True when the model already has its own Modelfile + config.yaml."""
+    mf, cy = _model_files(stem, working_dir)
+    return mf.exists() and cy.exists()
+
+
+def activate_model(stem: str, working_dir=None) -> None:
+    """Swap a model's stored Modelfile + config.yaml into the active root files."""
+    mf, cy = _model_files(stem, working_dir)
+    wd = Path(working_dir) if working_dir else PROJECT_ROOT
+    shutil.copyfile(mf, wd / "Modelfile")
+    shutil.copyfile(cy, wd / "config.yaml")
+
+
+def store_model(stem: str, working_dir=None) -> None:
+    """Copy the active root Modelfile + config.yaml into the model's folder."""
+    folder = model_folder(stem, working_dir)
+    folder.mkdir(parents=True, exist_ok=True)
+    wd = Path(working_dir) if working_dir else PROJECT_ROOT
+    shutil.copyfile(wd / "Modelfile", folder / "Modelfile")
+    shutil.copyfile(wd / "config.yaml", folder / "config.yaml")

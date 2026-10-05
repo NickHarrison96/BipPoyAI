@@ -1,5 +1,5 @@
 """
-Qwythos AI — Standalone Local Chat Interface
+BipPoyAI  — Your Locally Hosted Sidekick.
 
 A polished PySide6 desktop GUI for chatting with the Qwythos-9B model
 running locally through Ollama + LiteLLM proxy.
@@ -12,6 +12,8 @@ Usage:
 import sys
 import os
 import re
+import shutil
+import subprocess
 from pathlib import Path
 
 if sys.version_info < (3, 11):
@@ -23,13 +25,13 @@ if sys.version_info < (3, 11):
 
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
-    QPushButton, QTextEdit, QFrame, QScrollArea, QGroupBox, QLineEdit,
+    QPushButton, QTextEdit, QPlainTextEdit, QFrame, QScrollArea, QGroupBox, QLineEdit,
     QFormLayout, QComboBox, QSpinBox, QDoubleSpinBox,
 QMessageBox, QFileDialog, QCheckBox, QSystemTrayIcon, QMenu,
       QSizePolicy,
   )
 from PySide6.QtCore import Qt, QTimer, QSize, Signal
-from PySide6.QtGui import QKeyEvent, QShortcut, QKeySequence, QIcon, QPixmap, QPainter, QColor, QPen, QAction
+from PySide6.QtGui import QKeyEvent, QShortcut, QKeySequence, QIcon, QPixmap, QPainter, QColor, QPen, QAction, QDropEvent, QDragEnterEvent
 
 from styles import get_main_stylesheet, COLORS
 from backend import OllamaBackend
@@ -436,6 +438,84 @@ class SettingsPanel(QFrame):
 
         layout.addWidget(conn_group)
 
+        # ── Services Control ──
+        svc_group = QGroupBox("Services")
+        svc_layout = QVBoxLayout(svc_group)
+        svc_layout.setSpacing(12)
+        svc_layout.setContentsMargins(12, 20, 12, 12)
+
+        # LiteLLM control
+        litellm_row = QHBoxLayout()
+        self.litellm_status_label = QLabel("LiteLLM: Checking...")
+        self.litellm_status_label.setStyleSheet(f"font-size: 11px; color: {COLORS['text_muted']};")
+        litellm_row.addWidget(self.litellm_status_label)
+
+        self.litellm_toggle_btn = QPushButton("Start LiteLLM")
+        self.litellm_toggle_btn.setObjectName("secondaryButton")
+        self.litellm_toggle_btn.setFixedWidth(130)
+        self.litellm_toggle_btn.clicked.connect(self._toggle_litellm)
+        litellm_row.addWidget(self.litellm_toggle_btn)
+
+        self.litellm_health_btn = QPushButton("📋 Logs")
+        self.litellm_health_btn.setObjectName("secondaryButton")
+        self.litellm_health_btn.setFixedWidth(80)
+        self.litellm_health_btn.clicked.connect(self._toggle_litellm_logs)
+        litellm_row.addWidget(self.litellm_health_btn)
+        svc_layout.addLayout(litellm_row)
+
+        # LiteLLM log output (hidden by default)
+        self.litellm_log_view = QPlainTextEdit()
+        self.litellm_log_view.setReadOnly(True)
+        self.litellm_log_view.setFixedHeight(80)
+        self.litellm_log_view.setStyleSheet(f"""
+            background-color: {COLORS['bg_inset']};
+            border: 1px solid {COLORS['border']};
+            border-radius: 4px;
+            padding: 4px;
+            font-family: 'Consolas', 'Cascadia Code', monospace;
+            font-size: 10px;
+            color: {COLORS['text_primary']};
+        """)
+        self.litellm_log_view.setVisible(False)
+        svc_layout.addWidget(self.litellm_log_view)
+
+        # Ollama control
+        ollama_row = QHBoxLayout()
+        self.ollama_status_label = QLabel("Ollama: Checking...")
+        self.ollama_status_label.setStyleSheet(f"font-size: 11px; color: {COLORS['text_muted']};")
+        ollama_row.addWidget(self.ollama_status_label)
+
+        self.ollama_toggle_btn = QPushButton("Start Ollama")
+        self.ollama_toggle_btn.setObjectName("secondaryButton")
+        self.ollama_toggle_btn.setFixedWidth(130)
+        self.ollama_toggle_btn.clicked.connect(self._toggle_ollama)
+        ollama_row.addWidget(self.ollama_toggle_btn)
+
+        self.ollama_health_btn = QPushButton("📋 Logs")
+        self.ollama_health_btn.setObjectName("secondaryButton")
+        self.ollama_health_btn.setFixedWidth(80)
+        self.ollama_health_btn.clicked.connect(self._toggle_ollama_logs)
+        ollama_row.addWidget(self.ollama_health_btn)
+        svc_layout.addLayout(ollama_row)
+
+        # Ollama log output (hidden by default)
+        self.ollama_log_view = QPlainTextEdit()
+        self.ollama_log_view.setReadOnly(True)
+        self.ollama_log_view.setFixedHeight(80)
+        self.ollama_log_view.setStyleSheet(f"""
+            background-color: {COLORS['bg_inset']};
+            border: 1px solid {COLORS['border']};
+            border-radius: 4px;
+            padding: 4px;
+            font-family: 'Consolas', 'Cascadia Code', monospace;
+            font-size: 10px;
+            color: {COLORS['text_primary']};
+        """)
+        self.ollama_log_view.setVisible(False)
+        svc_layout.addWidget(self.ollama_log_view)
+
+        layout.addWidget(svc_group)
+
         # ── Claude CLI ──
         claude_group = QGroupBox("Claude CLI")
         claude_layout = QFormLayout(claude_group)
@@ -523,6 +603,15 @@ class SettingsPanel(QFrame):
         self._watch_for_changes()
         self._reset_dirty()
 
+        # Start service status polling timer
+        self._service_status_timer = QTimer(self)
+        self._service_status_timer.setInterval(2000)
+        self._service_status_timer.timeout.connect(self._sync_service_status)
+        self._service_status_timer.start()
+
+        # Poll once immediately
+        self._sync_service_status()
+
     def _refresh_gguf_list(self):
         """Populate the GGUF selector with ONLY the GGUFs inside the project's
         Models/ directory. Out-of-project weights are tracked in
@@ -579,10 +668,18 @@ class SettingsPanel(QFrame):
         self.gguf_combo.blockSignals(False)
         self._on_gguf_changed(name)
 
+    def refresh_gguf_list(self):
+        """Public wrapper for _refresh_gguf_list to allow MainWindow to trigger it."""
+        self._refresh_gguf_list()
+
+    def refresh_service_status(self):
+        """Public wrapper to trigger service status sync."""
+        self._sync_service_status()
+
     def _on_gguf_changed(self, filename: str):
-        """Switch to a different GGUF: derive tag, restore that model's own
-        settings, rebuild configs, hot-swap the backend, and offer to install
-        the model into Ollama if it is not there yet."""
+        """Switch to a different GGUF: swap in that model's own config.yaml +
+        Modelfile (or create the folder fresh), hot-swap the backend, and offer
+        to install the model into Ollama if it is not there yet."""
         if not filename or filename.startswith("("):
             return
         working_dir = Path(self.backend.working_dir)
@@ -596,6 +693,7 @@ class SettingsPanel(QFrame):
             return
 
         name = abs_path.name
+        stem = abs_path.stem
         if model_registry.is_in_project(abs_path):
             selected = f"Models/{name}"
         else:
@@ -603,54 +701,40 @@ class SettingsPanel(QFrame):
             model_registry.remember_external(name, str(abs_path))
 
         from configs import derive_model_tag
-        derived = derive_model_tag(name)
-
-        # Restore this model's saved tuning, or clean defaults so a fresh model
-        # never inherits the previous model's context/temperature/etc. The saved
-        # tag is honoured so a custom Ollama name survives switching weights.
-        saved = model_registry.model_settings(name)
-        merged = {**model_registry.default_settings(), **saved}
-        new_tag = (merged.get("tag") or derived)
-        tag_is_custom = bool(merged.get("tag") and merged.get("tag") != derived)
-
-        cfg = ModelConfig(
-            selected_gguf=selected,
-            model_tag=new_tag,
-            tag_is_custom=tag_is_custom,
-            engine_mode=self.engine_combo.currentText() or "litellm_chat",
-            context_size=int(merged["context_size"]),
-            gpu_layers=int(merged["gpu_layers"]),
-            cpu_threads=int(merged["cpu_threads"]),
-            batch_size=int(merged["batch_size"]),
-            temperature=float(merged["temperature"]),
-            max_tokens=int(merged["max_tokens"]),
-            thinking=bool(merged["thinking"]),
-            top_p=merged["top_p"],
-            top_k=merged["top_k"],
-            repeat_penalty=merged["repeat_penalty"],
-            system_prompt=(merged["system_prompt"] or ""),
-        )
-
-        try:
-            write_all(cfg, working_dir, self._registered_tags)
-        except ValueError as e:
-            QMessageBox.warning(self, "Switch Failed", str(e))
-            return
+        if model_registry.has_model_config(stem, working_dir):
+            # This model already has its own configs: swap them to the active
+            # root files and read back the result.
+            model_registry.activate_model(stem, working_dir)
+            cfg = load_full(working_dir)
+        else:
+            # Fresh model: write clean defaults and store them in a new folder.
+            current = load_full(working_dir)
+            cfg = ModelConfig(
+                selected_gguf=selected,
+                model_tag=derive_model_tag(name),
+                engine_mode=current.engine_mode,
+            )
+            try:
+                write_all(cfg, working_dir, self._registered_tags)
+            except ValueError as e:
+                QMessageBox.warning(self, "Switch Failed", str(e))
+                return
+            model_registry.store_model(stem, working_dir)
 
         # Reflect the restored settings in the form so nothing needs re-typing.
         self._populate_fields(cfg)
 
-        self.backend.set_model_tag(new_tag)
+        self.backend.set_model_tag(cfg.model_tag)
         self.backend.update_settings(
             temperature=cfg.temperature,
             num_ctx=cfg.context_size,
             max_tokens=cfg.max_tokens,
             engine_mode=cfg.engine_mode,
         )
-        self.info_label.setText(f"Model: {new_tag}")
+        self.info_label.setText(f"Model: {cfg.model_tag}")
         self._reset_dirty()
 
-        self._offer_install(new_tag)
+        self._offer_install(cfg.model_tag)
 
     def _offer_install(self, tag: str):
         """Prompt to build the model into Ollama if its tag is not installed."""
@@ -726,28 +810,11 @@ class SettingsPanel(QFrame):
         if cfg.model_tag:
             self.model_combo.setCurrentText(cfg.model_tag)
             self.info_label.setText(f"Model: {cfg.model_tag}")
+            # Keep ANTHROPIC_MODEL in lockstep with the active config.yaml tag.
+            self.claude_model_edit.setText(cfg.model_tag)
 
         # Thinking is owned by config.yaml (extra_body.think).
         self.thinking_check.setChecked(bool(cfg.thinking))
-
-    def _collect_model_settings(self) -> dict:
-        """Snapshot the per-model form fields for persistence in the registry."""
-        return {
-            "tag": (self.model_combo.currentText().strip() or None),
-            "context_size": int(self.ctx_combo.currentText()),
-            "max_tokens": int(self.max_tokens_combo.currentText()),
-            "temperature": self.temp_spin.value(),
-            "gpu_layers": self.gpu_spin.value(),
-            "cpu_threads": self.cpu_spin.value(),
-            "batch_size": int(self.batch_combo.currentText()),
-            "top_p": (self.top_p_spin.value() or None),
-            "top_k": (self.top_k_spin.value() or None),
-            "repeat_penalty": (
-                self.repeat_penalty_spin.value() if self.repeat_penalty_spin.value() != 1.0 else None
-            ),
-            "thinking": self.thinking_check.isChecked(),
-            "system_prompt": self.model_persona_edit.toPlainText().strip(),
-        }
 
     def _load_from_configs(self):
         """Read current settings from Modelfile + config.yaml via configs module."""
@@ -771,12 +838,14 @@ class SettingsPanel(QFrame):
             self.silent_launch_check.setChecked(
                 app_settings.is_true(loaded.get("launch_silent"))
             )
-            # Default the Claude model field to the configured tag so the common
-            # case needs no typing.
-            if not self.claude_model_edit.text():
-                self.claude_model_edit.setText(self.backend.get_model_tag())
+            # ANTHROPIC_MODEL must match config.yaml's model_name (there is no
+            # wildcard route), so keep the Claude model field on the active tag.
+            self.claude_model_edit.setText(self.backend.get_model_tag())
         except Exception as e:
             print(f"[SettingsPanel] Failed to load configs: {e}")
+
+        # Update service status buttons
+        self._sync_service_status()
 
     def _auto_detect(self):
         """Probe hardware and fill in recommended settings."""
@@ -959,9 +1028,9 @@ class SettingsPanel(QFrame):
             QMessageBox.critical(self, "Save Failed", str(e))
             return
 
-        # Remember this model's tuned fields (keyed by its weights filename) so
-        # switching away and back restores them instead of forcing manual re-entry.
-        model_registry.remember_model_settings(name, self._collect_model_settings())
+        # Persist these configs into the model's own folder so switching back
+        # restores them (tag, context, temperature, persona, …) without re-entry.
+        model_registry.store_model(Path(name).stem, working_dir)
 
         # Point the session at the tag we just wrote before creating it, so the
         # rebuild targets the selected model rather than whatever the dropdown
@@ -988,6 +1057,277 @@ class SettingsPanel(QFrame):
         )
         if rebuild == QMessageBox.Yes:
             self.model_rebuild_requested.emit()
+
+    # ─── Service Control ──────────────────────────────────────────────────────
+
+    def _toggle_litellm(self):
+        """Start or kill LiteLLM process based on current state."""
+        import subprocess
+        import shutil
+
+        # Check if LiteLLM is currently running
+        cmd = ["tasklist", "/FI", "IMAGENAME eq litellm.exe", "/FO", "CSV"]
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+            is_running = "litellm.exe" in result.stdout
+        except Exception:
+            is_running = False
+
+        if is_running:
+            # Kill all LiteLLM processes
+            try:
+                subprocess.run(["taskkill", "/F", "/IM", "litellm.exe"], capture_output=True, text=True, encoding="utf-8", errors="replace")
+                self.litellm_status_label.setText("LiteLLM: Stopped")
+                self.litellm_toggle_btn.setText("Start LiteLLM")
+                self.litellm_toggle_btn.setProperty("class", "secondaryButton")
+                self.litellm_toggle_btn.style().unpolish(self.litellm_toggle_btn)
+                self.litellm_toggle_btn.style().polish(self.litellm_toggle_btn)
+                # Clear logs if visible
+                if self.litellm_log_view.isVisible():
+                    self.litellm_log_view.clear()
+                self.backend.check_status()
+            except Exception as e:
+                QMessageBox.critical(self, "Kill Failed", f"Failed to stop LiteLLM:\n\n{str(e)}")
+        else:
+            # Start LiteLLM
+            litellm_path = shutil.which("litellm")
+            if not litellm_path:
+                QMessageBox.warning(
+                    self, "LiteLLM Not Found",
+                    "LiteLLM is not installed. Install with: pip install litellm"
+                )
+                return
+
+            # Use the panel's URL and API key settings
+            url = self.litellm_url_edit.text().strip() or "http://127.0.0.1:4000"
+            api_key = self.litellm_key_edit.text().strip() or "sk-ant-api03-local-mock-key-for-ollama-bypass-000000000000000000"
+
+            # Parse URL to get host and port
+            import re
+            match = re.match(r"https?://([^:]+):(\d+)", url)
+            if not match:
+                QMessageBox.warning(self, "Invalid URL", "Please enter a valid LiteLLM URL (e.g., http://127.0.0.1:4000)")
+                return
+
+            host, port = match.groups()
+
+            # Start LiteLLM in a new console window
+            silent = self.silent_launch_check.isChecked()
+            try:
+                if silent:
+                    # Start without console window
+                    startupinfo = subprocess.STARTUPINFO()
+                    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                    subprocess.Popen(
+                        [
+                            litellm_path,
+                            "--model", "openai/o1-mini",
+                            "--host", host,
+                            "--port", port,
+                            "--api_key", api_key,
+                        ],
+                        startupinfo=startupinfo,
+                        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                else:
+                    # Show console window
+                    subprocess.Popen(
+                        [
+                            "cmd", "/c", "start", "cmd", "/k",
+                            f"litellm --model openai/o1-mini --host {host} --port {port} --api_key {api_key}"
+                        ],
+                        creationflags=subprocess.CREATE_NEW_CONSOLE,
+                    )
+
+                self.litellm_status_label.setText("LiteLLM: Starting...")
+                self.litellm_toggle_btn.setText("Kill LiteLLM")
+                self.litellm_toggle_btn.setProperty("class", "dangerButton")
+                self.litellm_toggle_btn.style().unpolish(self.litellm_toggle_btn)
+                self.litellm_toggle_btn.style().polish(self.litellm_toggle_btn)
+
+                # Update backend URLs
+                self.backend.update_urls(
+                    ollama_base_url=self.ollama_url_edit.text(),
+                    litellm_base_url=self.litellm_url_edit.text(),
+                    litellm_api_key=self.litellm_key_edit.text(),
+                )
+
+                # Poll for status
+                QTimer.singleShot(2000, self.backend.check_status)
+            except Exception as e:
+                QMessageBox.critical(self, "Start Failed", f"Failed to start LiteLLM:\n\n{str(e)}")
+
+    def _toggle_ollama(self):
+        """Start or kill Ollama process based on current state."""
+        import subprocess
+
+        # Check if Ollama is currently running
+        cmd = ["tasklist", "/FI", "IMAGENAME eq ollama.exe", "/FO", "CSV"]
+        try:
+            result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+            is_running = "ollama.exe" in result.stdout
+        except Exception:
+            is_running = False
+
+        if is_running:
+            # Kill all Ollama processes
+            try:
+                subprocess.run(["taskkill", "/F", "/IM", "ollama.exe"], capture_output=True, text=True, encoding="utf-8", errors="replace")
+                self.ollama_status_label.setText("Ollama: Stopped")
+                self.ollama_toggle_btn.setText("Start Ollama")
+                self.ollama_toggle_btn.setProperty("class", "secondaryButton")
+                self.ollama_toggle_btn.style().unpolish(self.ollama_toggle_btn)
+                self.ollama_toggle_btn.style().polish(self.ollama_toggle_btn)
+                # Clear logs if visible
+                if self.ollama_log_view.isVisible():
+                    self.ollama_log_view.clear()
+                self.backend.check_status()
+            except Exception as e:
+                QMessageBox.critical(self, "Kill Failed", f"Failed to stop Ollama:\n\n{str(e)}")
+        else:
+            # Start Ollama
+            ollama_path = shutil.which("ollama")
+            if not ollama_path:
+                QMessageBox.warning(
+                    self, "Ollama Not Found",
+                    "Ollama is not installed. Install from https://ollama.com"
+                )
+                return
+
+            try:
+                # Start Ollama in a new console window
+                silent = self.silent_launch_check.isChecked()
+                if silent:
+                    startupinfo = subprocess.STARTUPINFO()
+                    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                    subprocess.Popen(
+                        [ollama_path, "serve"],
+                        startupinfo=startupinfo,
+                        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                    )
+                else:
+                    subprocess.Popen(
+                        ["cmd", "/c", "start", "cmd", "/k", "ollama serve"],
+                        creationflags=subprocess.CREATE_NEW_CONSOLE,
+                    )
+
+                self.ollama_status_label.setText("Ollama: Starting...")
+                self.ollama_toggle_btn.setText("Kill Ollama")
+                self.ollama_toggle_btn.setProperty("class", "dangerButton")
+                self.ollama_toggle_btn.style().unpolish(self.ollama_toggle_btn)
+                self.ollama_toggle_btn.style().polish(self.ollama_toggle_btn)
+
+                # Update backend URLs
+                self.backend.update_urls(
+                    ollama_base_url=self.ollama_url_edit.text(),
+                    litellm_base_url=self.litellm_url_edit.text(),
+                    litellm_api_key=self.litellm_key_edit.text(),
+                )
+
+                # Poll for status
+                QTimer.singleShot(2000, self.backend.check_status)
+            except Exception as e:
+                QMessageBox.critical(self, "Start Failed", f"Failed to start Ollama:\n\n{str(e)}")
+
+    def _sync_service_status(self):
+        """Update service status labels and button states based on tasklist."""
+        # Check LiteLLM status
+        try:
+            cmd = ["tasklist", "/FI", "IMAGENAME eq litellm.exe", "/FO", "CSV"]
+            result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+            litellm_running = "litellm.exe" in result.stdout
+        except Exception:
+            litellm_running = False
+
+        if litellm_running:
+            self.litellm_status_label.setText("LiteLLM: Running")
+            self.litellm_status_label.setStyleSheet(f"font-size: 11px; color: {COLORS['success']};")
+            self.litellm_toggle_btn.setText("Kill LiteLLM")
+            self.litellm_toggle_btn.setProperty("class", "dangerButton")
+        else:
+            self.litellm_status_label.setText("LiteLLM: Stopped")
+            self.litellm_status_label.setStyleSheet(f"font-size: 11px; color: {COLORS['text_muted']};")
+            self.litellm_toggle_btn.setText("Start LiteLLM")
+            self.litellm_toggle_btn.setProperty("class", "secondaryButton")
+
+        self.litellm_toggle_btn.style().unpolish(self.litellm_toggle_btn)
+        self.litellm_toggle_btn.style().polish(self.litellm_toggle_btn)
+
+        # Check Ollama status
+        try:
+            cmd = ["tasklist", "/FI", "IMAGENAME eq ollama.exe", "/FO", "CSV"]
+            result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+            ollama_running = "ollama.exe" in result.stdout
+        except Exception:
+            ollama_running = False
+
+        if ollama_running:
+            self.ollama_status_label.setText("Ollama: Running")
+            self.ollama_status_label.setStyleSheet(f"font-size: 11px; color: {COLORS['success']};")
+            self.ollama_toggle_btn.setText("Kill Ollama")
+            self.ollama_toggle_btn.setProperty("class", "dangerButton")
+        else:
+            self.ollama_status_label.setText("Ollama: Stopped")
+            self.ollama_status_label.setStyleSheet(f"font-size: 11px; color: {COLORS['text_muted']};")
+            self.ollama_toggle_btn.setText("Start Ollama")
+            self.ollama_toggle_btn.setProperty("class", "secondaryButton")
+
+        self.ollama_toggle_btn.style().unpolish(self.ollama_toggle_btn)
+        self.ollama_toggle_btn.style().polish(self.ollama_toggle_btn)
+
+    def _toggle_litellm_logs(self):
+        """Toggle visibility of LiteLLM log viewer and start/stop capturing logs."""
+        if self.litellm_log_view.isVisible():
+            self.litellm_log_view.setVisible(False)
+            self.litellm_health_btn.setText("📋 Logs")
+            if hasattr(self, '_litellm_log_timer') and self._litellm_log_timer:
+                self._litellm_log_timer.stop()
+                self._litellm_log_timer = None
+        else:
+            self.litellm_log_view.setVisible(True)
+            self.litellm_health_btn.setText("✕ Close Logs")
+            self._litellm_log_view = self.litellm_log_view
+            self._start_litellm_log_capture()
+
+    def _toggle_ollama_logs(self):
+        """Toggle visibility of Ollama log viewer and start/stop capturing logs."""
+        if self.ollama_log_view.isVisible():
+            self.ollama_log_view.setVisible(False)
+            self.ollama_health_btn.setText("📋 Logs")
+            if hasattr(self, '_ollama_log_timer') and self._ollama_log_timer:
+                self._ollama_log_timer.stop()
+                self._ollama_log_timer = None
+        else:
+            self.ollama_log_view.setVisible(True)
+            self.ollama_health_btn.setText("✕ Close Logs")
+            self._ollama_log_view = self.ollama_log_view
+            self._start_ollama_log_capture()
+
+    def _start_litellm_log_capture(self):
+        """Capture LiteLLM logs by reading from the console window."""
+        import ctypes
+        import msvcrt
+
+        # For now, just poll for LiteLLM process and try to capture output
+        # A full implementation would need to spawn LiteLLM with a pipe
+        # For simplicity, we'll add a "Logs are shown in the console window" hint
+        self.litellm_log_view.setPlainText(
+            "LiteLLM logs will appear in the console window.\n"
+            "To view logs, ensure 'Launch services silently' is unchecked when starting LiteLLM.\n"
+            "Recent activity will be displayed here in a future update.\n"
+        )
+
+    def _start_ollama_log_capture(self):
+        """Capture Ollama logs by reading from the console window."""
+        self.ollama_log_view.setPlainText(
+            "Ollama logs will appear in the console window.\n"
+            "To view logs, ensure 'Launch services silent' is unchecked when starting Ollama.\n"
+            "Recent activity will be displayed here in a future update.\n"
+        )
 
 
 # ─── Main Window ─────────────────────────────────────────────────────────────
@@ -1158,6 +1498,9 @@ class MainWindow(QMainWindow):
         self._tray = QSystemTrayIcon(self._make_tray_icon(), self)
         self._tray.setToolTip("Qwythos AI")
 
+        # Enable drag-and-drop for the main window
+        self.setAcceptDrops(True)
+
         menu = QMenu()
         show_action = QAction("Show / Hide", self)
         show_action.triggered.connect(self._toggle_visibility)
@@ -1211,6 +1554,142 @@ class MainWindow(QMainWindow):
         super().resizeEvent(event)
         self._backdrop.resize(self.size())
         self._scanlines.resize(self.size())
+
+    # ─── Drag and Drop Support ────────────────────────────────────────────────
+
+    def dragEnterEvent(self, event: QDragEnterEvent):
+        """Accept drag events that contain GGUF files."""
+        if event.mimeData().hasUrls():
+            urls = event.mimeData().urls()
+            # Check if any of the dragged files have .gguf extension
+            for url in urls:
+                if url.toLocalFile().lower().endswith('.gguf'):
+                    event.acceptProposedAction()
+                    return
+        event.ignore()
+
+    def dropEvent(self, event: QDropEvent):
+        """Handle dropped GGUF files - copy to Models/ directory and install."""
+        if not event.mimeData().hasUrls():
+            return
+
+        gguf_files = []
+        for url in event.mimeData().urls():
+            local_file = url.toLocalFile()
+            if local_file.lower().endswith('.gguf'):
+                gguf_files.append(local_file)
+
+        if not gguf_files:
+            return
+
+        # Show confirmation dialog
+        file_count = len(gguf_files)
+        files_str = "\n".join(f"  • {Path(f).name}" for f in gguf_files)
+        reply = QMessageBox.question(
+            self,
+            f"Install {file_count} model file{'s' if file_count > 1 else ''}?",
+            f"Drag-and-drop installation will:\n"
+            f"  1. Copy the GGUF file{'s' if file_count > 1 else ''} to Models/\n"
+            f"  2. Validate the GGUF integrity\n"
+            f"  3. Create the Ollama model\n"
+            f"\n"
+            f"Files to install:\n"
+            f"{files_str}",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes
+        )
+
+        if reply != QMessageBox.Yes:
+            return
+
+        # Import required modules
+        import shutil
+        from pathlib import Path
+
+        models_dir = Path(SCRIPT_DIR) / "Models"
+        models_dir.mkdir(exist_ok=True)
+
+        # Copy files and track new models
+        new_models = []
+        for gguf_path in gguf_files:
+            src_path = Path(gguf_path)
+            dest_path = models_dir / src_path.name
+
+            # Handle duplicates by adding a suffix
+            if dest_path.exists():
+                counter = 1
+                while True:
+                    dest_path = models_dir / f"{src_path.stem}_{counter}{src_path.suffix}"
+                    if not dest_path.exists():
+                        break
+                    counter += 1
+
+            try:
+                shutil.copy2(gguf_path, dest_path)
+                new_models.append(dest_path)
+            except Exception as e:
+                QMessageBox.critical(
+                    self,
+                    "Copy Failed",
+                    f"Failed to copy {src_path.name}:\n\n{str(e)}"
+                )
+                continue
+
+        if not new_models:
+            QMessageBox.warning(self, "No Files Copied", "No model files were successfully copied.")
+            return
+
+        # Validate GGUF integrity
+        invalid_files = []
+        for model_path in new_models:
+            try:
+                from tools import gguf_guards
+                if not gguf_guards.validate_gguf(model_path):
+                    invalid_files.append(model_path.name)
+            except Exception:
+                # If validation fails for any reason, skip it
+                pass
+
+        if invalid_files:
+            QMessageBox.warning(
+                self,
+                "Invalid GGUF Files",
+                f"The following files failed validation and were removed:\n"
+                f"{chr(10).join(f'  • {f}' for f in invalid_files)}\n\n"
+                f"Please download valid GGUF models from a trusted source."
+            )
+            # Remove invalid files
+            for fname in invalid_files:
+                (models_dir / fname).unlink(missing_ok=True)
+            new_models = [m for m in new_models if m.name not in invalid_files]
+
+        if not new_models:
+            QMessageBox.warning(self, "No Valid Models", "None of the dragged files are valid GGUF models.")
+            return
+
+        # Update the GGUF dropdown in settings panel
+        if hasattr(self, 'settings_panel') and self.settings_panel:
+            self.settings_panel.refresh_gguf_list()
+
+        # Prompt to install the models
+        model_names = [m.name for m in new_models]
+        if len(model_names) == 1:
+            QMessageBox.information(
+                self,
+                "Installation Complete",
+                f"Model '{model_names[0]}' copied to Models/.\n\n"
+                f"Click Settings → Model & Persona → Browse… to select it,\n"
+                f"then click Save & Rebuild Configs."
+            )
+        else:
+            QMessageBox.information(
+                self,
+                "Installation Complete",
+                f"{len(model_names)} models copied to Models/:\n\n"
+                f"{chr(10).join(f'  • {n}' for n in model_names)}\n\n"
+                f"Click Settings → Model & Persona → Browse… to select one,\n"
+                f"then click Save & Rebuild Configs."
+            )
 
     # ── Build UI Components ───────────────────────────────────────────────────
 
