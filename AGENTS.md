@@ -19,10 +19,11 @@ User (Claude CLI or GUI chat)
         │
         ▼
   Ollama  :11434
-  ← hosts the GGUF model (currently Qwythos-9B-Claude-Mythos-5-1M-MTP-Q4_K_M)
+  ← hosts one or more GGUF models built from `Models/`
         │
         ▼
-  Qwythos-9B.gguf  (≈5.8 GB, local file)
+  Models/*.gguf  (user-populated; active model is `qwythos-heretic`
+                  built from `Qwen3.5-9B-Heretic-patched2.gguf`)
 ```
 
 **Key architectural fact:** LiteLLM is mandatory — it is not optional middleware.
@@ -33,8 +34,9 @@ connects to it thinking it's talking to Anthropic, but actually routes to Ollama
 
 **Do not pass `--model <ollama-tag>` to `claude`.** Claude Code validates model names
 against its own known list and hangs on local Ollama tags (`unrecognized_model`).
-Set `ANTHROPIC_MODEL` instead — LiteLLM's `"*"` wildcard entry routes any name to the
-configured model.
+Set `ANTHROPIC_MODEL` to the exact tag in `config.yaml` instead. `model_list` must
+contain only that tag — a `"*"` wildcard entry silently served the wrong weights
+(see "No wildcard" below).
 
 **Force UTF-8 in every child process.** LiteLLM prints a box-drawing banner at startup
 and Ollama emits non-ASCII bytes; on a cp437/cp1252 console these raise
@@ -44,7 +46,7 @@ LiteLLM spawns need `PYTHONIOENCODING=utf-8` + `PYTHONUTF8=1`, and every
 
 There are **two ways to use the stack:**
 1. **GUI** (`main.py`) — chat interface, sends requests to LiteLLM directly
-2. **Claude CLI** — `claude --model <tag>`, routed through LiteLLM → Ollama
+2. **Claude CLI** — `claude` (no `--model`; `ANTHROPIC_MODEL` is set), routed through LiteLLM → Ollama
 
 ---
 
@@ -65,7 +67,8 @@ There are **two ways to use the stack:**
 | `Modelfile` | Ollama model definition — points to GGUF, sets hardware params | On disk, generated |
 | `config.yaml` | LiteLLM proxy config — model routing, Ollama endpoint, context | On disk, generated |
 | `Models/` | GGUF weights. Auto-excluded from git by `.gitignore` | Directory, user-populated |
-| `Modelfiles/` | Reserved for per-model Modelfile templates | Directory, empty |
+| `Modelfiles/` | Generated per-model Modelfiles (absolute paths, gitignored) | Directory, generated |
+| `tools/gguf_guards.py` | Inspect/neutralise chat-template guards; validates GGUF integrity | Active |
 | `requirements.txt` | Python deps: litellm, PySide6, requests, psutil, pynvml, ollama | Complete |
 | `launch.bat` | Double-click launcher: python main.py with error pause | Active |
 | `setup.bat` | Double-click launcher: python setup.py with argument forwarding | Active |
@@ -141,6 +144,10 @@ Patching rewrites each guard to an equal-length Jinja comment (`{{-` → `{#-`,
 and the GGUF metadata stays valid. `setup.py` refuses to build from a GGUF with
 live guards.
 
+`gguf_guards` also validates the file is a structurally complete GGUF before
+scanning or patching; a corrupt or truncated file is refused rather than
+silently patched into a corrupt output.
+
 **After `ollama create`, restart Ollama or force-unload the model.** A rebuild
 writes a new manifest, but an already-loaded runner keeps serving the previous
 weights until it unloads — so the fix appears not to work.
@@ -155,18 +162,28 @@ UI showed the requested name. A wrong name now fails with HTTP 400 instead.
 ## Model layout
 
 Weights live in `Models/` at the project root. `selected_gguf` is stored as
-`Models/<filename>` and the Modelfile always renders it as
-`FROM ./Models/<filename>`, so a clone works on any machine with no path
-editing — put the GGUF in `Models/` and the absolute path never appears.
+`Models/<filename>` (or a bare `<filename>` when the GUI dropdown sets it), and
+`configs.modelfile_from_path` renders it as an **absolute** forward-slash path.
+Ollama on Windows rejects a `FROM ./Models/<file>` line — it derives a model name
+from the source string, the leading `.` fails validation, and the server answers
+with a misleading "Error: 400 Bad Request: invalid model name" that looks like a
+bad tag. The Modelfile is regenerated whenever the model changes, so the absolute
+path costs nothing in portability.
 
 The active model is chosen at runtime, not baked in: the Settings → GGUF File
 dropdown lists everything in `Models/`, and `setup.py` prompts when several are
 present. Selecting one rewrites the Modelfile and `config.yaml` together via
-`write_all`, which refuses to write if the tag and weights disagree.
+`write_all`, which refuses to write if the tag and weights disagree. The Ollama
+tag is derived from the filename by `derive_model_tag`, which caps it at 80
+characters (Ollama's limit) with a hash suffix to avoid collisions and strips
+leading separators.
 
 Adding a model: drop the `.gguf` in `Models/`, check it with
-`python tools/gguf_guards.py Models/<file>`, patch it if it reports live
-guards, then pick it in Settings or run `setup.py`.
+`python tools/gguf_guards.py Models/<file>` — this validates the file is a
+well-formed GGUF and reports live chat-template guards — patch it if needed,
+then pick it in Settings or run `setup.py`. Unpatched originals can be parked in
+`Models/_originals/`; the `*.gguf` glob is non-recursive so they stay out of the
+dropdown.
 
 ---
 
@@ -309,6 +326,16 @@ backend.check_status() (every 5s)
 - ✅ **Stop button always visible** — enabled/disabled instead of shown/hidden; `ChatWorker.cancel()` closes the active response to unblock `iter_lines()` immediately
 - ✅ **Launch Claude CLI from GUI** — `⚡ Claude CLI` button in header; sets `ANTHROPIC_*` env vars, spawns `claude` in a new console window (no `--model`; see above)
 
+### V0.5 — Multi-model onboarding + Windows fixes (2026-10-05)
+
+- ✅ **Project-local model layout** — weights in `Models/`, generated per-model Modelfiles in `Modelfiles/` (gitignored); the GGUF dropdown and `setup.py` scan `Models/` and derive an Ollama tag from the filename.
+- ✅ **Ollama Windows FROM fix** — `configs.modelfile_from_path` emits an absolute forward-slash path; Ollama rejects `./Models/...` with a misleading "invalid model name". Bare dropdown names resolve into `Models/`.
+- ✅ **Tag sanitisation** — `derive_model_tag` caps tags at 80 chars with a hash suffix (collision-safe) and strips leading separators Ollama rejects.
+- ✅ **GGUF integrity validation** — `tools/gguf_guards.py` refuses to scan or patch a corrupt file (via the `gguf` package or a structural walk).
+- ✅ **setup.py guard-check fixes** — skips URL `FROM`s, no longer misclassifies absolute Windows paths, and drops a misplaced `die()` that aborted every local build.
+- ✅ **Onboarded three guarded models** — `Qwen3.5-4B-EmperoAI-Heretic-guarded`, `Qwythos-9B-Claude-Mythos-5-1M-MTP-Q4_K_M-guarded`, and the active `qwythos-heretic`.
+- 🔲 **Defiant Fable onboarding** — source GGUF is corrupt (the `gguf` parser fails); re-download required before it can be built.
+
 ### Backlog
 
 - ✅ **Multi-GGUF management** — `GGUF File` dropdown in Settings → Model & Persona; switching rebuilds Modelfile/config.yaml and hot-swaps the model tag
@@ -340,7 +367,7 @@ python config.py
 **Prerequisites:**
 - Python 3.11+
 - Ollama installed and running (`ollama serve`) — https://ollama.com
-- `Qwythos-9B-Claude-Mythos-5-1M-MTP-Q4_K_M.gguf` in this folder (≈5.8 GB)
+- One or more GGUF models in `Models/` (see "Model layout" above); the active model is `Qwen3.5-9B-Heretic-patched2.gguf` (≈5.8 GB), built as the Ollama tag `qwythos-heretic`
 - `litellm` available in PATH (satisfied by `pip install -r requirements.txt`)
 
 ---

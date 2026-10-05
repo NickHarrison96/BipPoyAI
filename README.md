@@ -18,10 +18,10 @@ User (Claude CLI or GUI chat)
         │
         ▼
   Ollama  :11434
-  ← hosts the GGUF model (Qwythos-9B-Claude-Mythos-5-1M-MTP-Q4_K_M)
+  ← hosts one or more GGUF models built from `Models/`
         │
         ▼
-  Qwen3.5-9B-Heretic-patched2.gguf  (≈5.8 GB, local file)
+  Models/*.gguf  (user-populated; active model is `qwythos-heretic`)
 ```
 
 ## Features
@@ -30,6 +30,8 @@ User (Claude CLI or GUI chat)
 - **Claude CLI Offline Spoofing**: Directs `claude` CLI requests through a local LiteLLM proxy into Ollama with zero internet connection needed.
 - **Automated Hardware Profiling**: Real-time detection of CPU threads, RAM, and GPU VRAM with tailored context and offloading recommendations.
 - **Flexible Tuning**: Tune context size, GPU layer offloading, thread count, batch size, and temperature via the GUI settings panel or terminal TUI.
+- **Multi-model management**: Drop multiple GGUFs into `Models/`, pick any one at runtime, and `setup.py` builds it into Ollama automatically.
+- **Chat-template guard tooling**: `tools/gguf_guards.py` inspects and patches the `raise_exception` guards that make some models crash on tool-result turns, and validates GGUF integrity.
 
 ---
 
@@ -37,9 +39,10 @@ User (Claude CLI or GUI chat)
 
 - **Python 3.11+** (ensure "Add python.exe to PATH" is checked)
 - **Ollama** installed and running (`ollama serve`) — https://ollama.com
-- **Model weights**: `Qwen3.5-9B-Heretic-patched2.gguf` (approx 5.8 GB)
-  Download: https://huggingface.co/empero-ai/Qwythos-9B-Claude-Mythos-5-1M
-  Place in the `Models/` directory
+- **Model weights**: one or more GGUF models in `Models/`. The active model is
+  `Qwen3.5-9B-Heretic-patched2.gguf` (~5.8 GB), built as the Ollama tag
+  `qwythos-heretic`. Verify any model before use:
+  `python tools/gguf_guards.py Models/<file>.gguf`
 - *(Optional)* **Claude CLI**: `npm install -g @anthropic-ai/claude-code`
 
 ---
@@ -67,6 +70,7 @@ Double-click **`setup.bat`** (or run `python setup.py`). It will detect your GGU
 | `hardware.py` | CPU/RAM/GPU detection and automatic tuning recommendations |
 | `config.py` | Terminal hardware tuning TUI (`--auto`, `--show` flags supported) |
 | `setup.py` | End-to-end setup and launch automation script |
+| `tools/gguf_guards.py` | Inspect/neutralise chat-template guards; validate GGUF integrity |
 | `launch.bat` | Double-click launcher for the desktop GUI |
 | `setup.bat` | Double-click launcher for setup and CLI stack |
 
@@ -103,4 +107,8 @@ python config.py --auto
 
 # Inspect detected hardware and active configuration
 python config.py --show
+
+# Inspect/repair a model's chat-template guards
+python tools/gguf_guards.py Models/<file>.gguf
+python tools/gguf_guards.py Models/<file>.gguf --patch Models/<file>-guarded.gguf
 ```
