@@ -495,6 +495,9 @@ class SettingsPanel(QFrame):
 
         self._form_widgets = []
         self._baseline = {}
+        # Tags Ollama currently has, so the coherence check can tell a
+        # deliberate rename from drift onto a model that does not exist.
+        self._registered_tags: set = set()
 
         layout.addStretch()
 
@@ -571,7 +574,7 @@ class SettingsPanel(QFrame):
         cfg = load_full(working_dir)
         cfg = cfg.with_updates(selected_gguf=filename, model_tag=new_tag)
         try:
-            write_all(cfg, working_dir)
+            write_all(cfg, working_dir, self._registered_tags)
         except ValueError as e:
             QMessageBox.warning(self, "Switch Failed", str(e))
             return
@@ -582,6 +585,7 @@ class SettingsPanel(QFrame):
 
     def _on_model_list_updated(self, models: list):
         """Update model switcher dropdown when Ollama reports installed models."""
+        self._registered_tags = set(models)
         if not models:
             return
         current = self.model_combo.currentText().strip()
@@ -838,7 +842,7 @@ class SettingsPanel(QFrame):
         )
 
         try:
-            write_all(cfg, working_dir)
+            write_all(cfg, working_dir, self._registered_tags)
         except ValueError as e:
             QMessageBox.critical(self, "Save Failed", str(e))
             return

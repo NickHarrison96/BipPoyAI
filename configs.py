@@ -42,6 +42,10 @@ class ModelConfig:
     # model was rebuilt, which is how Heretic's own prompt got clobbered.
     system_prompt: str = ""
 
+    # Set when the user deliberately names a model something other than what its
+    # filename implies. Suppresses the tag-vs-weights check in coherence_issues.
+    tag_is_custom: bool = False
+
     # Reasoning models emit a `thinking` block before any text. Left enabled,
     # the whole output budget can be consumed by reasoning and the response
     # arrives with zero text — which Claude Code reports as a truncated or empty
@@ -79,6 +83,60 @@ def modelfile_from_path(selected_gguf: str) -> str:
     if p.is_absolute():
         return p.as_posix()
     return f"./{p.name}"
+
+
+def coherence_issues(cfg: "ModelConfig", registered_tags=None) -> list:
+    """Ways the config.yaml model tag and the Modelfile can disagree.
+
+    The two files are written together from one ModelConfig, so they agree right
+    after a write. They drift when something edits one in isolation — a partial
+    write, a hand edit, or a rebuild from a different Modelfile. When that
+    happens the proxy keeps routing to one model while the panel describes
+    another, and the GUI then re-writes the stale value back.
+
+    A tag that differs from the filename is not automatically wrong: renaming a
+    model is normal, and `qwythos-heretic` legitimately names
+    `Qwen3.5-9B-Heretic-patched.gguf`. Pass the tags Ollama has registered and a
+    mismatch is only reported when the tag names nothing that exists, which is
+    the drift case.
+
+    Returns a list of human-readable problems; empty means coherent.
+    """
+    issues = []
+    if not cfg.model_tag:
+        issues.append("No model tag set, so config.yaml has nothing to route to.")
+        return issues
+    if not cfg.selected_gguf:
+        issues.append(
+            "No GGUF selected, so the Modelfile has no weights to point at."
+        )
+        return issues
+
+    gguf_path = Path(cfg.selected_gguf)
+    if not gguf_path.is_absolute():
+        # relative entries resolve against the project directory
+        pass
+    if not gguf_path.exists():
+        issues.append(
+            f"Modelfile points at a model file that does not exist:\n"
+            f"    {gguf_path}"
+        )
+
+    implied = derive_model_tag(gguf_path.name)
+    # A tag that differs from the weights is only suspicious when it names
+    # something Ollama does not have. A registered tag is a deliberate rename
+    # and is left alone.
+    known = set(registered_tags or ())
+    if implied != cfg.model_tag and not cfg.tag_is_custom:
+        if not known or cfg.model_tag not in known:
+            issues.append(
+                f"Model tag '{cfg.model_tag}' does not match the selected weights.\n"
+                f"    Modelfile : {gguf_path.name}\n"
+                f"    implies   : '{implied}'\n"
+                f"config.yaml would route to '{cfg.model_tag}' while the Modelfile "
+                f"describes {gguf_path.name}."
+            )
+    return issues
 
 
 # ─── Parsers ──────────────────────────────────────────────────────────────────
@@ -346,7 +404,20 @@ def write_config_yaml(cfg: ModelConfig, path: Path) -> None:
     )
 
 
-def write_all(cfg: ModelConfig, working_dir: Path) -> None:
-    """Persist both files in one call."""
+def write_all(cfg: ModelConfig, working_dir: Path, registered_tags=None) -> None:
+    """Persist both files in one call.
+
+    Refuses to write when the model tag and the selected weights disagree, since
+    that silently produces a proxy that routes somewhere other than the model
+    the panel is describing. Callers that legitimately want a custom tag should
+    resolve the issue first (see coherence_issues) rather than force past this.
+    """
+    issues = coherence_issues(cfg, registered_tags)
+    if issues:
+        raise ValueError(
+            "Refusing to save — the model tag and the selected weights disagree:\n\n"
+            + "\n".join(issues)
+            + "\n\nFix the model tag or re-pick the GGUF, then save again."
+        )
     write_modelfile(cfg, working_dir / "Modelfile")
     write_config_yaml(cfg, working_dir / "config.yaml")
