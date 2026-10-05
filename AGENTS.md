@@ -79,7 +79,9 @@ overlap again — that was the cause of silently reverted tuning.
 
 | Setting | Owned by | Why |
 |---|---|---|
-| GGUF path, layer placement, threads, batch, temperature | `Modelfile` | baked in at `ollama create` time; no per-request equivalent |
+| GGUF path, layer placement, threads, batch | `Modelfile` | baked in at `ollama create` time; no per-request equivalent |
+| temperature, top_p, top_k, repeat_penalty | `Modelfile` | sampling behaviour belongs to the model |
+| model persona (SYSTEM) | `Modelfile` | baked into the model; empty = keep the model's own |
 | **context size (`num_ctx`)**, `max_tokens` | `config.yaml` | LiteLLM forwards these on **every request**, so the proxy config is the only place they need to live |
 | model tag, `api_base`, engine mode | `config.yaml` | routing concern |
 
@@ -87,6 +89,16 @@ overlap again — that was the cause of silently reverted tuning.
 Modelfile no longer declares `num_ctx`; an older Modelfile that still has it is
 ignored. Direct-Ollama mode sends `num_ctx` per request in `options` for the same
 reason — it can no longer inherit the value from the model.
+
+**Never hardcode a SYSTEM prompt in `MODELFILE_TEMPLATE`.** It did once, and
+rebuilding silently replaced the personality of whichever model was installed —
+Heretic's own prompt was overwritten with a Claude Code persona. The persona is now
+`ModelConfig.system_prompt`, editable in Settings → Hardware → Model Persona, and
+empty means "keep the model's own".
+
+The same applies to sampling params: `top_p`, `top_k` and `repeat_penalty` are
+`Optional` and emit a `# PARAMETER x (using model default)` comment when unset,
+rather than imposing a value the model did not ask for.
 
 ### Why context size is 32768, not 65536
 

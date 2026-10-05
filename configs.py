@@ -30,6 +30,18 @@ class ModelConfig:
     temperature: float = 0.2
     max_tokens: int = 8192
 
+    # Sampling params baked in at `ollama create` time. These belong to the model,
+    # not to the proxy, so they live in the Modelfile. Leaving them at the GGUF's
+    # own defaults is fine — set them only when a model expects specific values.
+    top_p: Optional[float] = None
+    top_k: Optional[int] = None
+    repeat_penalty: Optional[float] = None
+
+    # Persona baked into the model. Deliberately a field rather than template
+    # text: a hardcoded SYSTEM silently overwrote the personality of whichever
+    # model was rebuilt, which is how Heretic's own prompt got clobbered.
+    system_prompt: str = ""
+
     # Reasoning models emit a `thinking` block before any text. Left enabled,
     # the whole output budget can be consumed by reasoning and the response
     # arrives with zero text — which Claude Code reports as a truncated or empty
@@ -98,6 +110,15 @@ def load_modelfile(path: Path) -> ModelConfig:
     _int_param(content, r'num_thread',  lambda v: setattr(cfg, "cpu_threads",  v))
     _int_param(content, r'num_batch',   lambda v: setattr(cfg, "batch_size",   v))
     _float_param(content, r'temperature', lambda v: setattr(cfg, "temperature", v))
+    _float_param(content, r'top_p',     lambda v: setattr(cfg, "top_p",     v))
+    _int_param(content, r'top_k',        lambda v: setattr(cfg, "top_k",     v))
+    _float_param(content, r'repeat_penalty', lambda v: setattr(cfg, "repeat_penalty", v))
+
+    # SYSTEM """...""" — may span lines. Absent means the model keeps its own
+    # default persona, which is stored as an empty string.
+    sys_match = re.search(r'^\s*SYSTEM\s+"""(.*?)"""', content, re.MULTILINE | re.DOTALL)
+    if sys_match:
+        cfg.system_prompt = sys_match.group(1).strip()
     # num_ctx is deliberately NOT read here: context size is owned by
     # config.yaml (see load_full). Older Modelfiles that still declare it are
     # ignored so there is exactly one source of truth.
@@ -231,12 +252,34 @@ PARAMETER num_gpu {gpu_layers}
 PARAMETER num_thread {cpu_threads}
 PARAMETER num_batch {batch_size}
 PARAMETER temperature {temperature}
+{optional_params}{system_block}"""
 
-SYSTEM \"\"\"
-You are Claude Code, Anthropic's official CLI for software engineering.
-Respond directly to user requests. Do not wrap tool calls in plain text JSON code blocks.
-\"\"\"
-"""
+
+def _modelfile_optional_params(cfg: ModelConfig) -> str:
+    """Sampling params, emitted only when set.
+
+    Blank lines are kept rather than filtered, so the layout stays stable
+    whether or not the user configured them.
+    """
+    parts = []
+    for key, value in (
+        ("top_p", cfg.top_p),
+        ("top_k", cfg.top_k),
+        ("repeat_penalty", cfg.repeat_penalty),
+    ):
+        if value is None:
+            parts.append("# PARAMETER %s (using model default)\n" % key)
+        else:
+            parts.append(f"PARAMETER {key} {value}\n")
+    return "".join(parts)
+
+
+def _modelfile_system_block(cfg: ModelConfig) -> str:
+    """SYSTEM block, emitted only when a persona is configured."""
+    prompt = (cfg.system_prompt or "").strip()
+    if not prompt:
+        return "\n# No SYSTEM block: the model keeps its own default persona.\n"
+    return f'\nSYSTEM """{prompt}"""\n'
 
 
 def write_modelfile(cfg: ModelConfig, path: Path) -> None:
@@ -249,6 +292,8 @@ def write_modelfile(cfg: ModelConfig, path: Path) -> None:
             cpu_threads=cfg.cpu_threads,
             batch_size=cfg.batch_size,
             temperature=cfg.temperature,
+            optional_params=_modelfile_optional_params(cfg),
+            system_block=_modelfile_system_block(cfg),
         ),
         encoding="utf-8",
     )

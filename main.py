@@ -356,6 +356,43 @@ class SettingsPanel(QFrame):
         self.batch_combo.setCurrentText("512")
         hw_layout.addRow("Batch Size:", self.batch_combo)
 
+        self.top_p_spin = QDoubleSpinBox()
+        self.top_p_spin.setRange(0.0, 1.0)
+        self.top_p_spin.setSingleStep(0.05)
+        self.top_p_spin.setDecimals(2)
+        self.top_p_spin.setSpecialValueText("model default")
+        self.top_p_spin.setValue(0.0)
+        self.top_p_spin.setToolTip("Nucleus sampling cutoff. 0 = use the model's own default.")
+        hw_layout.addRow("Top P:", self.top_p_spin)
+
+        self.top_k_spin = QSpinBox()
+        self.top_k_spin.setRange(0, 200)
+        self.top_k_spin.setSpecialValueText("model default")
+        self.top_k_spin.setValue(0)
+        self.top_k_spin.setToolTip("Top-K sampling limit. 0 = use the model's own default.")
+        hw_layout.addRow("Top K:", self.top_k_spin)
+
+        self.repeat_penalty_spin = QDoubleSpinBox()
+        self.repeat_penalty_spin.setRange(0.5, 3.0)
+        self.repeat_penalty_spin.setSingleStep(0.05)
+        self.repeat_penalty_spin.setDecimals(2)
+        self.repeat_penalty_spin.setValue(1.0)
+        self.repeat_penalty_spin.setToolTip("Penalty for repeating tokens. 1.0 = use the model's own default.")
+        hw_layout.addRow("Repeat Penalty:", self.repeat_penalty_spin)
+
+        # Persona baked into the model at create time. Separate from the chat
+        # System Prompt field above, which only affects the running session.
+        self.model_persona_edit = QTextEdit()
+        self.model_persona_edit.setFixedHeight(64)
+        self.model_persona_edit.setPlaceholderText(
+            "Leave empty to keep the model's own default persona."
+        )
+        self.model_persona_edit.setToolTip(
+            "Baked into the Ollama model as SYSTEM when you rebuild.\n"
+            "Leave empty to let the model keep whatever persona it shipped with."
+        )
+        hw_layout.addRow("Model Persona:", self.model_persona_edit)
+
         layout.addWidget(hw_group)
 
         # ── Connection Settings ──
@@ -591,6 +628,12 @@ class SettingsPanel(QFrame):
 
             self.temp_spin.setValue(cfg.temperature)
 
+            # Sampling params are Optional on the model: 0 means "not set".
+            self.top_p_spin.setValue(cfg.top_p or 0.0)
+            self.top_k_spin.setValue(cfg.top_k or 0)
+            self.repeat_penalty_spin.setValue(cfg.repeat_penalty or 1.0)
+            self.model_persona_edit.setPlainText(cfg.system_prompt)
+
             idx = self.engine_combo.findText(cfg.engine_mode)
             if idx >= 0:
                 self.engine_combo.setCurrentIndex(idx)
@@ -783,6 +826,12 @@ class SettingsPanel(QFrame):
             temperature=self.temp_spin.value(),
             max_tokens=int(self.max_tokens_combo.currentText()),
             thinking=self.thinking_check.isChecked(),
+            top_p=(self.top_p_spin.value() or None),
+            top_k=(self.top_k_spin.value() or None),
+            repeat_penalty=(
+                self.repeat_penalty_spin.value() if self.repeat_penalty_spin.value() != 1.0 else None
+            ),
+            system_prompt=self.model_persona_edit.toPlainText().strip(),
             litellm_url=self.litellm_url_edit.text() or "http://127.0.0.1:4000",
             litellm_api_key=self.litellm_key_edit.text() or "",
             ollama_base_url=self.ollama_url_edit.text() or "http://127.0.0.1:11434",
