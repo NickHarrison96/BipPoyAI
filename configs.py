@@ -66,9 +66,15 @@ class ModelConfig:
 # ─── Tag derivation ───────────────────────────────────────────────────────────
 
 def derive_model_tag(gguf_filename: str) -> str:
-    """Turn a GGUF filename (or full path) into a valid Ollama tag."""
+    """Turn a GGUF filename (or full path) into a valid Ollama tag.
+
+    Preserves the original case. Ollama tags are case-insensitive for matching
+    but the HTTP API and `ollama list` preserve case, so a lowercased tag would
+    not round-trip through the model dropdown. Only invalid characters are
+    replaced.
+    """
     stem = Path(gguf_filename).stem
-    return re.sub(r'[^a-z0-9._-]', '-', stem.lower())
+    return re.sub(r'[^a-zA-Z0-9._-]', '-', stem)
 
 
 def modelfile_from_path(selected_gguf: str) -> str:

@@ -849,7 +849,8 @@ class OllamaBackend(QObject):
             if worker is not None and worker.isRunning():
                 if worker is self._chat_worker:
                     worker.cancel()
-                worker.wait(3000)
+                worker.quit()
+                worker.wait(5000)
                 if worker.isRunning():
                     worker.terminate()
                     worker.wait(1000)
