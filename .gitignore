@@ -32,6 +32,9 @@ desktop.ini
 *.gguf
 Models/*.gguf
 
+# Generated per-model Modelfiles (machine-local absolute paths; rebuilt on switch)
+Modelfiles/*.Modelfile
+
 # Logs
 *.log
 
