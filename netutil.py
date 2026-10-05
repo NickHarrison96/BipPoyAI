@@ -31,7 +31,12 @@ def pid_on_port(port: int) -> Optional[int]:
     """Windows: PID of the process listening on TCP `port`, else None."""
     try:
         out = subprocess.run(
-            ["netstat", "-ano"], capture_output=True, text=True, timeout=10
+            ["netstat", "-ano"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=10,
         ).stdout
     except Exception:
         return None
@@ -60,6 +65,26 @@ def litellm_healthy(base_url: str) -> bool:
         if r.status_code == 404:
             # Older LiteLLM: deep health is the only probe - allow it time.
             return requests.get(f"{base_url}/health", timeout=15).status_code == 200
+        return False
+    except requests.exceptions.ConnectionError:
+        return False
+    except Exception:
+        return False
+
+
+def litellm_ready(base_url: str) -> bool:
+    """True when LiteLLM has finished loading its config and can route.
+
+    Spec Step 3 gates launch on /health/readiness (200 = routes live), which is
+    stricter than liveliness (process up but config may still be loading).
+    Falls back to liveliness for versions without the route.
+    """
+    try:
+        r = requests.get(f"{base_url}/health/readiness", timeout=15)
+        if r.status_code == 200:
+            return True
+        if r.status_code == 404:
+            return litellm_healthy(base_url)
         return False
     except requests.exceptions.ConnectionError:
         return False

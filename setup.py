@@ -180,7 +180,13 @@ def stage_build_ollama(working_dir: Path, cfg: configs.ModelConfig, auto: bool =
 
     # If the tag already exists in Ollama, offer to skip the rebuild.
     if not auto:
-        existing = subprocess.run(["ollama", "list"], capture_output=True, text=True)
+        existing = subprocess.run(
+            ["ollama", "list"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+        )
         if cfg.model_tag in existing.stdout:
             if not ask(f"Model '{cfg.model_tag}' already exists in Ollama. Rebuild it?", default=False):
                 success(f"'{cfg.model_tag}' already registered — skipping build.")
@@ -241,11 +247,16 @@ def start_litellm_proxy(working_dir: Path, cfg: configs.ModelConfig) -> bool:
     verbose(f"Spawning LiteLLM proxy on {host}:{port}...")
     cmd = ["litellm", "--config", str(working_dir / "config.yaml"),
            "--host", host, "--port", str(port)]
+    # Force UTF-8 so LiteLLM's box-drawing startup banner cannot raise
+    # UnicodeEncodeError on a cp437/cp1252 console and kill the proxy.
+    env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONUTF8"] = "1"
     if os.name == "nt":
-        subprocess.Popen(cmd, cwd=str(working_dir),
+        subprocess.Popen(cmd, cwd=str(working_dir), env=env,
                          creationflags=subprocess.CREATE_NEW_CONSOLE)
     else:
-        subprocess.Popen(cmd, cwd=str(working_dir))
+        subprocess.Popen(cmd, cwd=str(working_dir), env=env)
 
     verbose("Waiting for LiteLLM to initialize...")
     for _ in range(45):
@@ -279,8 +290,10 @@ def stage_launch_stack(working_dir: Path, cfg: configs.ModelConfig, auto: bool =
 
     # Set Anthropic spoofing environment variables for Claude CLI
     os.environ["ANTHROPIC_BASE_URL"] = cfg.litellm_url
-    os.environ["ANTHROPIC_AUTH_TOKEN"] = "ollama"
-    os.environ["ANTHROPIC_API_KEY"] = cfg.litellm_api_key
+    os.environ["ANTHROPIC_AUTH_TOKEN"] = "sk-litellm-local"
+    os.environ["ANTHROPIC_API_KEY"] = ""
+    os.environ["CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS"] = "1"
+    os.environ["ANTHROPIC_MODEL"] = cfg.model_tag
 
     if not launch_claude:
         return
@@ -294,7 +307,10 @@ def stage_launch_stack(working_dir: Path, cfg: configs.ModelConfig, auto: bool =
         return
 
     success(f"Launching Claude CLI with model: {cfg.model_tag}")
-    subprocess.run(["claude", "--model", cfg.model_tag])
+    # No --model flag: Claude Code validates model names against its own known
+    # list and stalls on local Ollama tags. ANTHROPIC_MODEL (set above) selects
+    # the model and LiteLLM's "*" wildcard routes it.
+    subprocess.run(["claude"])
 
 
 def parse_args():

@@ -764,7 +764,7 @@ class MainWindow(QMainWindow):
         menu.addAction(show_action)
         menu.addSeparator()
         quit_action = QAction("Quit", self)
-        quit_action.triggered.connect(QApplication.quit)
+        quit_action.triggered.connect(self._quit_app)
         menu.addAction(quit_action)
         self._tray.setContextMenu(menu)
         self._tray.activated.connect(self._on_tray_activated)
@@ -782,6 +782,14 @@ class MainWindow(QMainWindow):
             self.raise_()
             self.activateWindow()
 
+    def _quit_app(self):
+        """Terminate managed child processes, then exit (spec Step 5)."""
+        try:
+            self.backend.shutdown()
+        except Exception:
+            pass
+        QApplication.quit()
+
     def closeEvent(self, event):
         """Minimize to tray instead of closing (unless tray is unavailable)."""
         if self._tray and self._tray.isVisible():
@@ -792,6 +800,10 @@ class MainWindow(QMainWindow):
                 QSystemTrayIcon.Information, 2000,
             )
         else:
+            try:
+                self.backend.shutdown()
+            except Exception:
+                pass
             event.accept()
 
     def resizeEvent(self, event):
@@ -1133,21 +1145,25 @@ class MainWindow(QMainWindow):
             return
 
         import subprocess as _subprocess
+        model = self.backend.get_model_tag()
         env = os.environ.copy()
         env["ANTHROPIC_BASE_URL"] = self.backend.litellm_base_url
-        env["ANTHROPIC_AUTH_TOKEN"] = "ollama"
-        env["ANTHROPIC_API_KEY"] = self.backend.litellm_api_key
-
-        model = self.backend.get_model_tag()
+        env["ANTHROPIC_AUTH_TOKEN"] = "sk-litellm-local"
+        env["ANTHROPIC_API_KEY"] = ""
+        env["CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS"] = "1"
+        env["ANTHROPIC_MODEL"] = model
         try:
+            # No --model flag: Claude Code validates model names against its own
+            # known list and stalls on local Ollama tags. ANTHROPIC_MODEL above
+            # selects the model, and LiteLLM's "*" wildcard routes it.
             if os.name == "nt":
                 _subprocess.Popen(
-                    ["cmd", "/c", "start", "cmd", "/k", f"claude --model {model}"],
+                    ["cmd", "/c", "start", "cmd", "/k", "claude"],
                     env=env, cwd=SCRIPT_DIR,
                 )
             else:
                 _subprocess.Popen(
-                    ["x-terminal-emulator", "-e", "claude", "--model", model],
+                    ["x-terminal-emulator", "-e", "claude"],
                     env=env, cwd=SCRIPT_DIR,
                 )
         except OSError as e:

@@ -371,6 +371,7 @@ class LiteLLMStarter(QThread):
     progress_update = Signal(str)
     started_ok = Signal()
     started_error = Signal(str)
+    proc_started = Signal(object)  # the spawned Popen, so the backend can clean it up
 
     def __init__(
         self,
@@ -402,7 +403,9 @@ class LiteLLMStarter(QThread):
                 return
 
             def health_ok() -> bool:
-                return netutil.litellm_healthy(self.litellm_url)
+                # Spec Step 3: gate on /health/readiness so Claude CLI never
+                # launches against a proxy that is up but still loading config.
+                return netutil.litellm_ready(self.litellm_url)
 
             port = urlparse(self.litellm_url).port or 4000
             host = urlparse(self.litellm_url).hostname or "127.0.0.1"
@@ -440,20 +443,31 @@ class LiteLLMStarter(QThread):
             cmd = ["litellm", "--config", self.config_path,
                    "--host", host, "--port", str(port)]
 
+            # LiteLLM prints a box-drawing banner at startup. On a non-UTF8
+            # console (cp437/cp1252) that raises UnicodeEncodeError inside
+            # proxy_startup_event and the proxy dies before serving anything.
+            # Force UTF-8 in the child's environment so startup always succeeds.
+            env = os.environ.copy()
+            env["PYTHONIOENCODING"] = "utf-8"
+            env["PYTHONUTF8"] = "1"
+
             # Spawn in a separate console window on Windows
             if os.name == 'nt':
-                subprocess.Popen(
+                proc = subprocess.Popen(
                     cmd,
                     cwd=self.working_dir,
+                    env=env,
                     creationflags=subprocess.CREATE_NEW_CONSOLE,
                 )
             else:
-                subprocess.Popen(
+                proc = subprocess.Popen(
                     cmd,
                     cwd=self.working_dir,
+                    env=env,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                 )
+            self.proc_started.emit(proc)
 
             # Wait for it to come up. LiteLLM boots slowly (~1 min) and its
             # /health endpoint itself takes ~3s to answer, so poll patiently.
@@ -524,6 +538,8 @@ class ModelManager(QThread):
                 cwd=self.working_dir,
                 capture_output=True,
                 text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=300,
             )
 
@@ -538,6 +554,44 @@ class ModelManager(QThread):
             self.finished_error.emit("Model creation timed out after 5 minutes.")
         except Exception as e:
             self.finished_error.emit(f"Unexpected error during model creation:\n{str(e)}")
+
+
+# ─── Model Preloader (spec Step 1: load weights, keep warm) ───────────────────
+
+class ModelPreloader(QThread):
+    """
+    Runs `ollama run <tag> "" --keepalive 24h` so the weights are resident in
+    VRAM before the first request instead of paging in mid-conversation.
+    """
+    progress_update = Signal(str)
+    finished_ok = Signal()
+    finished_error = Signal(str)
+
+    def __init__(self, model_tag: str, parent: Optional[QObject] = None):
+        super().__init__(parent)
+        self.model_tag = model_tag
+
+    def run(self):
+        try:
+            self.progress_update.emit(f"Loading weights for '{self.model_tag}'...")
+            process = subprocess.run(
+                ["ollama", "run", self.model_tag, "", "--keepalive", "24h"],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=600,
+            )
+            if process.returncode == 0:
+                self.progress_update.emit("Model loaded and kept warm for 24h.")
+                self.finished_ok.emit()
+            else:
+                stderr = (process.stderr or "").strip()
+                self.finished_error.emit(stderr or "ollama run failed.")
+        except subprocess.TimeoutExpired:
+            self.finished_error.emit("Preload timed out after 10 minutes.")
+        except Exception as e:
+            self.finished_error.emit(str(e))
 
 
 # ─── Ollama Backend (main interface for the GUI) ─────────────────────────────
@@ -579,6 +633,9 @@ class OllamaBackend(QObject):
         self._model_manager: Optional[ModelManager] = None
         self._litellm_starter: Optional[LiteLLMStarter] = None
         self._status_worker: Optional[StatusWorker] = None
+        self._litellm_proc = None  # spawned LiteLLM Popen, terminated on shutdown
+        self._preloader: Optional[ModelPreloader] = None
+        self._preloaded = False  # preload the weights once per session
 
         # Conversation history
         self.conversation: List[Dict[str, str]] = []
@@ -642,6 +699,19 @@ class OllamaBackend(QObject):
         self.model_status_changed.emit(model_status)
         if model_names:
             self.model_list_updated.emit(model_names)
+        # Spec Step 1: first time the model is confirmed present, warm it up.
+        if model_status == "ready" and not self._preloaded:
+            self._preloaded = True
+            self.preload_model()
+
+    def preload_model(self) -> Optional[ModelPreloader]:
+        """Kick off the weight preload (spec Step 1) in a background thread."""
+        if self._preloader and self._preloader.isRunning():
+            return self._preloader
+        preloader = ModelPreloader(model_tag=self.model_tag, parent=self)
+        self._preloader = preloader
+        preloader.start()
+        return preloader
 
     def get_system_prompt(self) -> str:
         """Get the current system prompt if one is set."""
@@ -745,8 +815,41 @@ class OllamaBackend(QObject):
             litellm_url=self.litellm_base_url,
             parent=self,
         )
+        starter.proc_started.connect(self._remember_litellm_proc)
         self._litellm_starter = starter
         return starter
+
+    def _remember_litellm_proc(self, proc):
+        self._litellm_proc = proc
+
+    def shutdown(self):
+        """Terminate managed child processes (spec Step 5: process cleanup)."""
+        # Stop background polling so nothing fires during teardown
+        self._poll_timer.stop()
+
+        for worker in (self._chat_worker, self._status_worker,
+                       self._litellm_starter, self._preloader):
+            if worker is not None and worker.isRunning():
+                if worker is self._chat_worker:
+                    worker.cancel()
+                worker.wait(3000)
+                if worker.isRunning():
+                    worker.terminate()
+                    worker.wait(1000)
+
+        proc = self._litellm_proc
+        self._litellm_proc = None
+        if proc is None:
+            return
+        try:
+            if proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except Exception:
+                    proc.kill()
+        except Exception:
+            pass
 
     def get_model_tag(self) -> str:
         return self.model_tag

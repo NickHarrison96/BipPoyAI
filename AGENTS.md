@@ -28,7 +28,19 @@ User (Claude CLI or GUI chat)
 **Key architectural fact:** LiteLLM is mandatory — it is not optional middleware.
 It exists specifically to spoof `api.anthropic.com` so that the `claude` CLI (Claude Code)
 connects to it thinking it's talking to Anthropic, but actually routes to Ollama locally.
-`setup.py` sets `ANTHROPIC_BASE_URL=http://localhost:4000` + `ANTHROPIC_API_KEY` env vars to make this transparent.
+`setup.py` sets the Claude Code env vars (`ANTHROPIC_BASE_URL`, `ANTHROPIC_AUTH_TOKEN`,
+`ANTHROPIC_MODEL`, `CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS`) to make this transparent.
+
+**Do not pass `--model <ollama-tag>` to `claude`.** Claude Code validates model names
+against its own known list and hangs on local Ollama tags (`unrecognized_model`).
+Set `ANTHROPIC_MODEL` instead — LiteLLM's `"*"` wildcard entry routes any name to the
+configured model.
+
+**Force UTF-8 in every child process.** LiteLLM prints a box-drawing banner at startup
+and Ollama emits non-ASCII bytes; on a cp437/cp1252 console these raise
+`UnicodeEncodeError` / `UnicodeDecodeError`. LiteLLM dies before serving anything, so
+LiteLLM spawns need `PYTHONIOENCODING=utf-8` + `PYTHONUTF8=1`, and every
+`subprocess.run(..., text=True)` needs `encoding="utf-8", errors="replace"`.
 
 There are **two ways to use the stack:**
 1. **GUI** (`main.py`) — chat interface, sends requests to LiteLLM directly
@@ -199,7 +211,7 @@ backend.check_status() (every 5s)
 - ✅ **System tray icon / minimize to tray** — `_setup_tray()` generates icon at runtime; `closeEvent` hides to tray with notification; Show/Hide + Quit menu; click tray to toggle
 - ✅ **Auto-start LiteLLM on app launch** — checkbox in Settings → Connection; persisted to `settings.json`; `_maybe_autostart_litellm()` fires 1.5s after launch
 - ✅ **Stop button always visible** — enabled/disabled instead of shown/hidden; `ChatWorker.cancel()` closes the active response to unblock `iter_lines()` immediately
-- ✅ **Launch Claude CLI from GUI** — `⚡ Claude CLI` button in header; sets `ANTHROPIC_*` env vars, spawns `claude --model <tag>` in a new console window
+- ✅ **Launch Claude CLI from GUI** — `⚡ Claude CLI` button in header; sets `ANTHROPIC_*` env vars, spawns `claude` in a new console window (no `--model`; see above)
 
 ### Backlog
 
