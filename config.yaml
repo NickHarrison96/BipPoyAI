@@ -3,13 +3,16 @@ model_list:
     litellm_params:
       model: ollama_chat/qwythos-heretic
       api_base: http://127.0.0.1:11434
-      num_ctx: 65536
+      # 32768 keeps the KV cache resident on an 8GB GPU (~9% CPU offload).
+      # The model's Modelfile defaults to 65536, which forces ~24% offload
+      # because the KV cache no longer fits beside the weights.
+      num_ctx: 32768
       max_tokens: 8192
   - model_name: "*"
     litellm_params:
       model: ollama_chat/qwythos-heretic
       api_base: http://127.0.0.1:11434
-      num_ctx: 65536
+      num_ctx: 32768
       max_tokens: 8192
 
 litellm_settings:
