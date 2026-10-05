@@ -1746,9 +1746,30 @@ class MainWindow(QMainWindow):
         self._add_welcome_message()
 
     def _toggle_settings(self):
-        """Show/hide the settings panel."""
+        """Show/hide the settings panel, growing the window to fit it so the
+        chat area keeps its width instead of being squeezed narrower."""
         visible = self.settings_scroll.isVisible()
-        self.settings_scroll.setVisible(not visible)
+        showing = not visible
+        if showing:
+            # Remember where we started so closing restores the size.
+            self._width_before_settings = self.width()
+            # How wide the panel wants to be, within its own min/max bounds.
+            panel_width = self.settings_panel.sizeHint().width()
+            panel_width = max(
+                self.settings_panel.minimumWidth(),
+                min(panel_width, self.settings_panel.maximumWidth()),
+            )
+            # Never push the window past the desktop's usable width.
+            avail = self.screen().availableGeometry().width()
+            new_width = min(self.width() + panel_width, avail)
+            if new_width > self.width():
+                self.resize(new_width, self.height())
+        else:
+            restore = getattr(self, "_width_before_settings", None)
+            if restore is not None and restore >= self.minimumWidth():
+                self.resize(restore, self.height())
+            self._width_before_settings = None
+        self.settings_scroll.setVisible(showing)
 
     def _on_scroll_changed(self, value: int):
         """Re-enable auto-scroll when the user returns to the bottom."""
