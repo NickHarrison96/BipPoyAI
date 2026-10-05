@@ -4,7 +4,7 @@
 
 1. **Python 3.11+** installed and added to PATH (https://python.org)
 2. **Ollama** installed and running (`ollama serve`) — https://ollama.com
-3. **Model Weights** — Place `Qwen3.5-9B-Heretic-patched2.gguf` in this folder
+3. **Model Weights** — Place `Qwen3.5-9B-Heretic-patched2.gguf` in the `Models/` directory
 
 ---
 

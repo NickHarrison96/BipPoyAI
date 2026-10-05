@@ -39,6 +39,7 @@ User (Claude CLI or GUI chat)
 - **Ollama** installed and running (`ollama serve`) — https://ollama.com
 - **Model weights**: `Qwen3.5-9B-Heretic-patched2.gguf` (approx 5.8 GB)
   Download: https://huggingface.co/empero-ai/Qwythos-9B-Claude-Mythos-5-1M
+  Place in the `Models/` directory
 - *(Optional)* **Claude CLI**: `npm install -g @anthropic-ai/claude-code`
 
 ---

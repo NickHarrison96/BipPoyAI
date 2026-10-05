@@ -62,8 +62,10 @@ There are **two ways to use the stack:**
 | `config.py` | Terminal TUI for hardware tuning (uses configs.py + hardware.py; supports --auto, --show) | Active |
 | `setup.py` | Automation: GGUF → Ollama build → LiteLLM launch → Claude CLI (supports CLI flags) | Active |
 | `history.py` | Chat history persistence — JSON sessions + auto-save in `~/.qwythos/history/` | Active |
-| `Modelfile` | Ollama model definition — points to GGUF, sets hardware params | On disk |
-| `config.yaml` | LiteLLM proxy config — model routing, Ollama endpoint, context | On disk |
+| `Modelfile` | Ollama model definition — points to GGUF, sets hardware params | On disk, generated |
+| `config.yaml` | LiteLLM proxy config — model routing, Ollama endpoint, context | On disk, generated |
+| `Models/` | GGUF weights. Auto-excluded from git by `.gitignore` | Directory, user-populated |
+| `Modelfiles/` | Reserved for per-model Modelfile templates | Directory, empty |
 | `requirements.txt` | Python deps: litellm, PySide6, requests, psutil, pynvml, ollama | Complete |
 | `launch.bat` | Double-click launcher: python main.py with error pause | Active |
 | `setup.bat` | Double-click launcher: python setup.py with argument forwarding | Active |
@@ -149,6 +151,24 @@ weights until it unloads — so the fix appears not to work.
 entry routed *every* requested name to that model, so selecting a different model
 in the UI or the Claude Model field silently served the wrong weights while the
 UI showed the requested name. A wrong name now fails with HTTP 400 instead.
+
+## Model layout
+
+Weights live in `Models/` at the project root. `selected_gguf` is stored as
+`Models/<filename>` and the Modelfile always renders it as
+`FROM ./Models/<filename>`, so a clone works on any machine with no path
+editing — put the GGUF in `Models/` and the absolute path never appears.
+
+The active model is chosen at runtime, not baked in: the Settings → GGUF File
+dropdown lists everything in `Models/`, and `setup.py` prompts when several are
+present. Selecting one rewrites the Modelfile and `config.yaml` together via
+`write_all`, which refuses to write if the tag and weights disagree.
+
+Adding a model: drop the `.gguf` in `Models/`, check it with
+`python tools/gguf_guards.py Models/<file>`, patch it if it reports live
+guards, then pick it in Settings or run `setup.py`.
+
+---
 
 ## Design System
 

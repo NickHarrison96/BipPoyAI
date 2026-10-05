@@ -80,18 +80,18 @@ def derive_model_tag(gguf_filename: str) -> str:
 def modelfile_from_path(selected_gguf: str) -> str:
     """Render the Modelfile FROM value for a GGUF reference.
 
-    Repo-local files stay relative ('./model.gguf') so the Modelfile remains
-    portable. Anything outside the working directory is written as an absolute
-    path with forward slashes, which Ollama accepts. Models usually live on a
-    separate drive (e.g. E:\\Models), so the absolute case is the common one.
+    Repo-local files stay relative ('./Models/model.gguf') so the Modelfile
+    remains portable. Anything outside the working directory is written as an
+    absolute path with forward slashes, which Ollama accepts. Models usually
+    live in the Models/ subdirectory, so the relative case is the common one.
     """
     p = Path(selected_gguf)
     if p.is_absolute():
         return p.as_posix()
-    return f"./{p.name}"
+    return f"./Models/{p.name}"
 
 
-def coherence_issues(cfg: "ModelConfig", registered_tags=None) -> list:
+def coherence_issues(cfg: "ModelConfig", registered_tags=None, working_dir=None) -> list:
     """Ways the config.yaml model tag and the Modelfile can disagree.
 
     The two files are written together from one ModelConfig, so they agree right
@@ -119,10 +119,10 @@ def coherence_issues(cfg: "ModelConfig", registered_tags=None) -> list:
         return issues
 
     gguf_path = Path(cfg.selected_gguf)
-    if not gguf_path.is_absolute():
-        # relative entries resolve against the project directory
-        pass
-    if not gguf_path.exists():
+    # Relative entries ("Models/x.gguf") resolve against the project directory,
+    # not the process cwd, or the check reports a false "missing" file.
+    resolved = gguf_path if gguf_path.is_absolute() or working_dir is None else (Path(working_dir) / gguf_path)
+    if not resolved.exists():
         issues.append(
             f"Modelfile points at a model file that does not exist:\n"
             f"    {gguf_path}"
@@ -269,9 +269,10 @@ def load_full(working_dir: Path) -> ModelConfig:
     if y.get("thinking") is not None:
         cfg.thinking = y["thinking"]
 
-    # If Modelfile didn't declare a GGUF, pick the first one on disk
+    # If Modelfile didn't declare a GGUF, pick the first one in Models/
     if not cfg.selected_gguf:
-        ggufs = list(working_dir.glob("*.gguf"))
+        models_dir = working_dir / "Models"
+        ggufs = list(models_dir.glob("*.gguf")) if models_dir.exists() else []
         if ggufs:
             cfg.selected_gguf = ggufs[0].name
 
@@ -423,7 +424,7 @@ def write_all(cfg: ModelConfig, working_dir: Path, registered_tags=None) -> None
     the panel is describing. Callers that legitimately want a custom tag should
     resolve the issue first (see coherence_issues) rather than force past this.
     """
-    issues = coherence_issues(cfg, registered_tags)
+    issues = coherence_issues(cfg, registered_tags, working_dir)
     if issues:
         raise ValueError(
             "Refusing to save — the model tag and the selected weights disagree:\n\n"

@@ -119,20 +119,23 @@ def download_gguf(working_dir: Path, url: str, filename: str) -> bool:
 
 def stage_detect_gguf(working_dir: Path, auto: bool = False, requested_name: Optional[str] = None) -> Path:
     print(f"{C_HEADER}=== STAGE 1: GGUF File Check ==={C_RESET}")
-    ggufs = list(working_dir.glob("*.gguf"))
+    models_dir = working_dir / "Models"
+    ggufs = list(models_dir.glob("*.gguf")) if models_dir.exists() else []
     if not ggufs:
         existing = configs.load_full(working_dir)
         if existing.selected_gguf:
-            warn(f"No .gguf files currently in {working_dir}.")
+            warn(f"No .gguf files currently in {models_dir}.")
             warn(f"Using previously configured model reference: {existing.selected_gguf}")
-            return working_dir / existing.selected_gguf
-        error(f"No .gguf files in {working_dir}")
+            # selected_gguf may already carry a "Models/" prefix; use the bare
+            # filename so this does not resolve to Models/Models/<name>.gguf.
+            return models_dir / Path(existing.selected_gguf).name
+        error(f"No .gguf files in {models_dir}")
         error("Download the model weights first (e.g. Qwen3.5-9B-Heretic-patched2.gguf).")
         if auto or ask("Download the model now?", default=True):
             url = "https://huggingface.co/empero-ai/Qwythos-9B-Claude-Mythos-5-1M/resolve/main/Qwythos-9B-Claude-Mythos-5-1M-MTP-Q4_K_M.gguf"
             filename = "Qwythos-9B-Claude-Mythos-5-1M-MTP-Q4_K_M.gguf"
-            if download_gguf(working_dir, url, filename):
-                ggufs = list(working_dir.glob("*.gguf"))
+            if download_gguf(models_dir, url, filename):
+                ggufs = list(models_dir.glob("*.gguf"))
                 if ggufs:
                     success(f"Downloaded: {ggufs[0].name}")
                     warn("Run 'python tools/gguf_guards.py' to patch the chat template before first use.")
@@ -183,7 +186,7 @@ def stage_write_configs(working_dir: Path, gguf: Path, auto: bool = False) -> co
         )
 
     cfg = existing.with_updates(
-        selected_gguf=gguf.name,
+        selected_gguf=f"Models/{gguf.name}",
         model_tag=existing.model_tag or configs.derive_model_tag(gguf.name),
     )
 

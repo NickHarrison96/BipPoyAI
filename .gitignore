@@ -30,6 +30,7 @@ desktop.ini
 
 # Model weights (large binary files — never commit)
 *.gguf
+Models/*.gguf
 
 # Logs
 *.log

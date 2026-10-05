@@ -523,10 +523,11 @@ class SettingsPanel(QFrame):
         self._reset_dirty()
 
     def _refresh_gguf_list(self):
-        """Populate the GGUF selector with repo-local files, then re-select whatever
+        """Populate the GGUF selector with Models/ files, then re-select whatever
         the config already points at (which may be an absolute path elsewhere)."""
         working_dir = Path(self.backend.working_dir)
-        ggufs = sorted(f.name for f in working_dir.glob("*.gguf"))
+        models_dir = working_dir / "Models"
+        ggufs = sorted(f.name for f in models_dir.glob("*.gguf")) if models_dir.exists() else []
         current_cfg = load_full(working_dir)
 
         self.gguf_combo.blockSignals(True)
@@ -535,12 +536,12 @@ class SettingsPanel(QFrame):
         current = current_cfg.selected_gguf
         if current:
             # Keep the configured selection visible even when the file is not in
-            # the project directory — otherwise it looks like nothing is selected.
+            # Models/ - otherwise it looks like nothing is selected.
             if current not in ggufs:
                 self.gguf_combo.addItem(current)
             self.gguf_combo.setCurrentText(current)
         elif not ggufs:
-            self.gguf_combo.addItem("(no .gguf found — click Browse…)")
+            self.gguf_combo.addItem("(no .gguf found - click Browse.)")
             self.gguf_combo.setCurrentIndex(0)
         self.gguf_combo.blockSignals(False)
 
