@@ -458,13 +458,20 @@ class LiteLLMStarter(QThread):
             env["PYTHONIOENCODING"] = "utf-8"
             env["PYTHONUTF8"] = "1"
 
-            # Spawn in a separate console window on Windows
+            # A console window is useful while diagnosing, but once the stack is
+            # known-good the user wants it gone. CREATE_NO_WINDOW suppresses it.
+            silent = settings.is_true(settings.load().get("launch_silent"))
             if os.name == 'nt':
+                flags = (
+                    subprocess.CREATE_NO_WINDOW
+                    if silent
+                    else subprocess.CREATE_NEW_CONSOLE
+                )
                 proc = subprocess.Popen(
                     cmd,
                     cwd=self.working_dir,
                     env=env,
-                    creationflags=subprocess.CREATE_NEW_CONSOLE,
+                    creationflags=flags,
                 )
             else:
                 proc = subprocess.Popen(

@@ -252,9 +252,11 @@ def start_litellm_proxy(working_dir: Path, cfg: configs.ModelConfig) -> bool:
     env = os.environ.copy()
     env["PYTHONIOENCODING"] = "utf-8"
     env["PYTHONUTF8"] = "1"
+    silent = settings.is_true(settings.load().get("launch_silent"))
     if os.name == "nt":
+        flags = subprocess.CREATE_NO_WINDOW if silent else subprocess.CREATE_NEW_CONSOLE
         subprocess.Popen(cmd, cwd=str(working_dir), env=env,
-                         creationflags=subprocess.CREATE_NEW_CONSOLE)
+                         creationflags=flags)
     else:
         subprocess.Popen(cmd, cwd=str(working_dir), env=env)
 

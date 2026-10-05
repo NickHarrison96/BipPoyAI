@@ -19,7 +19,24 @@ DEFAULTS = {
     "litellm_base_url": "http://127.0.0.1:4000",
     "litellm_api_key": "sk-ant-api03-local-mock-key-for-ollama-bypass-000000000000000000",
     "auto_start_litellm": "false",
+    # When true, child processes (LiteLLM proxy) start without a console window.
+    # Handy once the stack is known-good; you lose the live log on failure.
+    "launch_silent": "false",
 }
+
+
+def is_true(value) -> bool:
+    """Interpret a settings string as a boolean.
+
+    Settings are persisted as strings because save() only accepts non-empty
+    strings, so every boolean flag round-trips as "true"/"false".
+    """
+    return str(value).strip().lower() == "true"
+
+
+def to_flag(value: bool) -> str:
+    """Render a boolean for storage via save()."""
+    return "true" if value else "false"
 
 
 def load() -> dict:
