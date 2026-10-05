@@ -970,11 +970,19 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(chat_container, 1)
 
         # ── Settings Panel (right sidebar) ──
+        # Wrapped in a scroll area: the panel has grown past the window height
+        # and without this the lower groups overflow and their labels collide.
         self.settings_panel = SettingsPanel(self.backend)
-        self.settings_panel.setVisible(False)  # hidden by default
         self.settings_panel.model_rebuild_requested.connect(self._install_model)
         self.settings_panel.launch_claude_requested.connect(self._launch_claude_cli)
-        main_layout.addWidget(self.settings_panel)
+
+        self.settings_scroll = QScrollArea()
+        self.settings_scroll.setWidgetResizable(True)
+        self.settings_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.settings_scroll.setFrameShape(QFrame.NoFrame)
+        self.settings_scroll.setWidget(self.settings_panel)
+        self.settings_scroll.setVisible(False)  # hidden by default
+        main_layout.addWidget(self.settings_scroll)
 
         # Push backdrop to the very back, scanlines float above it but below content
         self._backdrop.lower()
@@ -1619,8 +1627,8 @@ class MainWindow(QMainWindow):
 
     def _toggle_settings(self):
         """Show/hide the settings panel."""
-        visible = self.settings_panel.isVisible()
-        self.settings_panel.setVisible(not visible)
+        visible = self.settings_scroll.isVisible()
+        self.settings_scroll.setVisible(not visible)
 
     def _on_scroll_changed(self, value: int):
         """Re-enable auto-scroll when the user returns to the bottom."""
