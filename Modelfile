@@ -1,4 +1,4 @@
-FROM E:/Models/Qwen3.5-2B-HAVOK/Qwen3.5-2B-Uncensored-HauhauCS-Aggressive-BF16.gguf
+FROM E:/Models/Qwen3.5-9B-Heretic/Qwen3.5-9B-Heretic-patched2.gguf
 
 # Baked in at `ollama create` time. These are model-construction concerns: layer
 # placement, thread count, batch size. They have no per-request equivalent.
