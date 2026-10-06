@@ -1,10 +1,13 @@
 """
-Pip-Boy inspired theme — amber/gold readout on weathered dark green.
+Cayde 420 theme — bone-white plating over gunmetal, lit by a visor-orange glow.
 
 Design rules:
   - Monospace everywhere.
-  - Amber is the ink; green is the paper. Never the reverse.
-  - Panels are rounded and outlined in warm gold, lit from within.
+  - Bone white is the ink; gunmetal is the paper. Never the reverse.
+  - Panels are flat and steel-outlined. Light does not come from inside a
+    panel — it bleeds in through the seams, which is what `ember` is for.
+  - Visor orange is the accent, and it is rationed: brand, focus, primary
+    action, and glow only. If everything is orange, nothing is.
   - Green/amber/red LEDs carry status. Nothing else is allowed to be red.
   - Texture, glow, and knobs are painted in widgets.py — QSS can't do them.
 """
@@ -12,56 +15,75 @@ Design rules:
 # ─── Palette ──────────────────────────────────────────────────────────────────
 
 COLORS = {
-    # Ground — desaturated field green, warm-shifted
-    "bg":            "#16241c",
-    "bg_deep":       "#0f1a14",
-    "bg_raised":     "#1c2e24",
-    "bg_panel":      "#1a2b21",
-    "bg_inset":      "#111c16",
-    "bg_hover":      "#24382c",
+    # Ground — cold gunmetal, blue-shifted so orange reads as emissive
+    "bg":            "#1a1d24",
+    "bg_deep":       "#101218",
+    "bg_raised":     "#262a33",
+    "bg_panel":      "#1f232b",
+    "bg_inset":      "#14171d",
+    "bg_hover":      "#2f343e",
 
-    # Warm light bleeding through the cracks
-    "ember":         "#c76a3a",
-    "ember_dim":     "#5c3520",
+    # Visor orange — light bleeding through the seams
+    "ember":         "#ff8a2b",
+    "ember_dim":     "#5e3212",
 
-    # Amber ramp — the readout
-    "a_dim":         "#6b5a34",
-    "a_muted":       "#9a834a",
-    "a_mid":         "#c9a961",
-    "a_bright":      "#e8c07a",
-    "a_hot":         "#ffd98a",
+    # Bone ramp — the readout. Grey at rest, emissive only at the top end.
+    "a_dim":         "#6a6f7a",
+    "a_muted":       "#949aa6",
+    "a_mid":         "#c2c8d2",
+    "a_bright":      "#e8ecf2",
+    "a_hot":         "#ff9a3c",
 
     # Status LEDs
-    "led_green":     "#6eff7a",
-    "led_green_dim": "#1f4a26",
-    "led_amber":     "#ffb642",
+    "led_green":     "#46e08a",
+    "led_green_dim": "#14432a",
+    "led_amber":     "#ffb020",
     "led_amber_dim": "#5c3f14",
-    "led_red":       "#ff5f56",
+    "led_red":       "#ff4d4d",
     "led_red_dim":   "#4a1a18",
 
-    # Structure
-    "border":        "#3d5240",
-    "border_warm":   "#7a6238",
-    "border_hot":    "#c9a961",
+    # Structure — steel, never orange. Orange lives in the glow layer only.
+    "border":        "#2b303b",
+    "border_warm":   "#454d5b",
+    "border_hot":    "#6b7686",
 
     # ── Back-compat aliases (older main.py referenced these) ──
-    "glass":                    "#1a2b21",
-    "glass_border":             "#7a6238",
-    "divider":                  "#3d5240",
-    "text_primary":             "#e8c07a",
-    "text_secondary":           "#c9a961",
-    "text_muted":               "#9a834a",
-    "accent":                   "#ffd98a",
-    "success":                  "#6eff7a",
-    "warning":                  "#ffb642",
-    "error":                    "#ff5f56",
-    "user_bubble":              "#111c16",
-    "user_bubble_border":       "#7a6238",
-    "assistant_bubble":         "#1a2b21",
-    "assistant_bubble_border":  "#3d5240",
+    "glass":                    "#171a21",
+    "glass_border":             "#454d5b",
+    "divider":                  "#2b303b",
+    "text_primary":             "#e8ecf2",
+    "text_secondary":           "#c2c8d2",
+    "text_muted":               "#949aa6",
+    "accent":                   "#ff9a3c",
+    "success":                  "#46e08a",
+    "warning":                  "#ffb020",
+    "error":                    "#ff4d4d",
+    "user_bubble":              "#101218",
+    "user_bubble_border":       "#454d5b",
+    "assistant_bubble":         "#171a21",
+    "assistant_bubble_border":  "#2b303b",
 }
 
 MONO = '"Cascadia Mono", "JetBrains Mono", "Consolas", "DejaVu Sans Mono", monospace'
+
+
+def rgba(key: str, alpha: float) -> str:
+    """Compose a translucent tint from a palette hex, so QSS stays in sync."""
+    h = COLORS[key].lstrip("#")
+    r, g, b = (int(h[i:i + 2], 16) for i in (0, 2, 4))
+    return f"rgba({r}, {g}, {b}, {alpha})"
+
+
+# ─── Identity ─────────────────────────────────────────────────────────────────
+#
+# Every user-visible name comes from here. The app is "Cayde 420"; the
+# assistant is addressed as "Cayde" in the chat transcript. Do NOT reach for
+# the model tag (`qwythos-heretic`) in UI strings — see AGENTS.md, "Naming".
+
+APP_NAME = "Cayde 420"
+ASSISTANT_NAME = "Cayde"
+GLYPH = "⬡"  # hexagon, matches the tray icon and welcome glyph
+TITLE = f"{GLYPH}  {APP_NAME}"
 
 
 def get_main_stylesheet() -> str:
@@ -89,40 +111,40 @@ def get_main_stylesheet() -> str:
 
     /* ── STRUCTURAL FRAMES ─────────────────────────────────────── */
     QFrame#headerBar {{
-        background-color: rgba(15, 26, 20, 0.72);
+        background-color: {rgba("bg_deep", 0.72)};
         border: none;
         border-bottom: 1px solid {C["border_warm"]};
     }}
 
     QFrame#statusStrip {{
-        background-color: rgba(10, 18, 14, 0.88);
+        background-color: {rgba("bg_deep", 0.9)};
         border: none;
         border-top: 1px solid {C["border_warm"]};
     }}
 
     QFrame#inputDock {{
-        background-color: rgba(15, 26, 20, 0.72);
+        background-color: {rgba("bg_deep", 0.72)};
         border: none;
         border-top: 1px solid {C["border_warm"]};
     }}
 
     QFrame#alertBar {{
-        background-color: rgba(92, 63, 20, 0.55);
+        background-color: {rgba("ember_dim", 0.45)};
         border: none;
         border-bottom: 1px solid {C["led_amber"]};
     }}
 
-    /* Rounded readout panel — the signature element */
+    /* Steel plate — the signature panel */
     QFrame#panel {{
-        background-color: rgba(26, 43, 33, 0.82);
-        border: 1px solid {C["border_hot"]};
-        border-radius: 10px;
+        background-color: {rgba("bg_panel", 0.85)};
+        border: 1px solid {C["border_warm"]};
+        border-radius: 4px;
     }}
 
     QFrame#panelInset {{
-        background-color: rgba(17, 28, 22, 0.85);
+        background-color: {rgba("bg_inset", 0.88)};
         border: 1px solid {C["border"]};
-        border-radius: 8px;
+        border-radius: 3px;
     }}
 
     /* ── SCROLL ────────────────────────────────────────────────── */
@@ -130,48 +152,48 @@ def get_main_stylesheet() -> str:
     QScrollArea > QWidget > QWidget {{ background: transparent; }}
 
     QScrollBar:vertical {{
-        background: rgba(17, 28, 22, 0.6);
+        background: {rgba("bg_inset", 0.6)};
         width: 12px;
         margin: 0;
         border-left: 1px solid {C["border"]};
     }}
     QScrollBar::handle:vertical {{
-        background: {C["a_dim"]};
+        background: {C["border_warm"]};
         min-height: 28px;
-        border-radius: 3px;
+        border-radius: 2px;
         margin: 2px;
     }}
-    QScrollBar::handle:vertical:hover {{ background: {C["a_muted"]}; }}
+    QScrollBar::handle:vertical:hover {{ background: {C["a_dim"]}; }}
     QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
     QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: none; }}
 
     QScrollBar:horizontal {{
-        background: rgba(17, 28, 22, 0.6);
+        background: {rgba("bg_inset", 0.6)};
         height: 12px;
         border-top: 1px solid {C["border"]};
     }}
     QScrollBar::handle:horizontal {{
-        background: {C["a_dim"]}; min-width: 28px; border-radius: 3px; margin: 2px;
+        background: {C["border_warm"]}; min-width: 28px; border-radius: 2px; margin: 2px;
     }}
-    QScrollBar::handle:horizontal:hover {{ background: {C["a_muted"]}; }}
+    QScrollBar::handle:horizontal:hover {{ background: {C["a_dim"]}; }}
     QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0; }}
 
     /* ── BUTTONS ───────────────────────────────────────────────── */
     QPushButton {{
-        background-color: rgba(26, 43, 33, 0.6);
+        background-color: {rgba("bg_raised", 0.7)};
         color: {C["a_mid"]};
         border: 1px solid {C["border_warm"]};
-        border-radius: 6px;
+        border-radius: 3px;
         padding: 7px 15px;
         font-family: {MONO};
         font-size: 12px;
         font-weight: 700;
-        letter-spacing: 1px;
+        letter-spacing: 2px;
     }}
     QPushButton:hover {{
         background-color: {C["bg_hover"]};
         color: {C["a_hot"]};
-        border-color: {C["border_hot"]};
+        border-color: {C["ember"]};
     }}
     QPushButton:pressed {{
         background-color: {C["a_dim"]};
@@ -184,13 +206,13 @@ def get_main_stylesheet() -> str:
     }}
 
     QPushButton#primaryButton {{
-        background-color: rgba(201, 169, 97, 0.18);
+        background-color: {rgba("ember", 0.16)};
         color: {C["a_hot"]};
-        border: 1px solid {C["border_hot"]};
+        border: 1px solid {C["ember"]};
     }}
     QPushButton#primaryButton:hover {{
-        background-color: rgba(232, 192, 122, 0.32);
-        color: #fff0c4;
+        background-color: {rgba("ember", 0.3)};
+        color: {C["a_bright"]};
     }}
     QPushButton#primaryButton:disabled {{
         background-color: transparent;
@@ -201,10 +223,10 @@ def get_main_stylesheet() -> str:
     QPushButton#dangerButton {{
         color: {C["led_red"]};
         border: 1px solid {C["led_red_dim"]};
-        background-color: rgba(74, 26, 24, 0.35);
+        background-color: {rgba("led_red_dim", 0.4)};
     }}
     QPushButton#dangerButton:hover {{
-        background-color: rgba(255, 95, 86, 0.22);
+        background-color: {rgba("led_red", 0.22)};
         border-color: {C["led_red"]};
     }}
 
@@ -217,7 +239,7 @@ def get_main_stylesheet() -> str:
     QPushButton#ghostButton:hover {{
         color: {C["a_hot"]};
         border-color: {C["border_warm"]};
-        background-color: rgba(36, 56, 44, 0.6);
+        background-color: {rgba("bg_hover", 0.6)};
     }}
 
     QPushButton#tabButton {{
@@ -236,44 +258,44 @@ def get_main_stylesheet() -> str:
 
     /* ── INPUTS ────────────────────────────────────────────────── */
     QTextEdit#chatInput {{
-        background-color: rgba(17, 28, 22, 0.9);
+        background-color: {rgba("bg_inset", 0.92)};
         border: 1px solid {C["border_warm"]};
-        border-radius: 8px;
+        border-radius: 4px;
         padding: 10px 13px;
         color: {C["a_bright"]};
         font-family: {MONO};
         font-size: 13px;
-        selection-background-color: {C["a_muted"]};
-        selection-color: {C["bg_deep"]};
+        selection-background-color: {C["ember_dim"]};
+        selection-color: {C["a_bright"]};
     }}
-    QTextEdit#chatInput:focus {{ border-color: {C["border_hot"]}; }}
+    QTextEdit#chatInput:focus {{ border-color: {C["ember"]}; }}
 
     QLineEdit {{
-        background-color: rgba(17, 28, 22, 0.9);
+        background-color: {rgba("bg_inset", 0.92)};
         border: 1px solid {C["border"]};
-        border-radius: 5px;
+        border-radius: 3px;
         padding: 6px 9px;
         color: {C["a_bright"]};
         font-family: {MONO};
         font-size: 12px;
-        selection-background-color: {C["a_muted"]};
-        selection-color: {C["bg_deep"]};
+        selection-background-color: {C["ember_dim"]};
+        selection-color: {C["a_bright"]};
     }}
-    QLineEdit:focus {{ border-color: {C["border_hot"]}; }}
+    QLineEdit:focus {{ border-color: {C["ember"]}; }}
     QLineEdit:disabled {{ color: {C["a_dim"]}; }}
 
     /* ── COMBO / SPIN ──────────────────────────────────────────── */
     QComboBox {{
-        background-color: rgba(17, 28, 22, 0.9);
+        background-color: {rgba("bg_inset", 0.92)};
         border: 1px solid {C["border"]};
-        border-radius: 5px;
+        border-radius: 3px;
         padding: 6px 9px;
         color: {C["a_bright"]};
         font-family: {MONO};
         font-size: 12px;
     }}
     QComboBox:hover {{ border-color: {C["border_warm"]}; }}
-    QComboBox:focus {{ border-color: {C["border_hot"]}; }}
+    QComboBox:focus {{ border-color: {C["ember"]}; }}
     QComboBox::drop-down {{
         border: none;
         border-left: 1px solid {C["border"]};
@@ -288,25 +310,25 @@ def get_main_stylesheet() -> str:
     }}
     QComboBox QAbstractItemView {{
         background-color: {C["bg_deep"]};
-        border: 1px solid {C["border_hot"]};
-        border-radius: 5px;
+        border: 1px solid {C["border_warm"]};
+        border-radius: 3px;
         color: {C["a_mid"]};
-        selection-background-color: rgba(201, 169, 97, 0.25);
-        selection-color: {C["a_hot"]};
+        selection-background-color: {rgba("ember", 0.24)};
+        selection-color: {C["a_bright"]};
         outline: none;
         padding: 3px;
     }}
 
     QSpinBox, QDoubleSpinBox {{
-        background-color: rgba(17, 28, 22, 0.9);
+        background-color: {rgba("bg_inset", 0.92)};
         border: 1px solid {C["border"]};
-        border-radius: 5px;
+        border-radius: 3px;
         padding: 6px 9px;
         color: {C["a_bright"]};
         font-family: {MONO};
         font-size: 12px;
     }}
-    QSpinBox:focus, QDoubleSpinBox:focus {{ border-color: {C["border_hot"]}; }}
+    QSpinBox:focus, QDoubleSpinBox:focus {{ border-color: {C["ember"]}; }}
     QSpinBox::up-button, QDoubleSpinBox::up-button,
     QSpinBox::down-button, QDoubleSpinBox::down-button {{
         background: transparent;
@@ -331,21 +353,21 @@ def get_main_stylesheet() -> str:
     QLabel {{ background: transparent; color: {C["a_mid"]}; }}
 
     QLabel#brandLabel {{
-        color: {C["a_hot"]};
+        color: {C["a_bright"]};
         font-size: 19px;
         font-weight: 700;
-        letter-spacing: 1px;
+        letter-spacing: 3px;
     }}
     QLabel#brandSub {{
-        color: {C["a_dim"]};
+        color: {C["ember"]};
         font-size: 11px;
-        letter-spacing: 1px;
+        letter-spacing: 4px;
     }}
     QLabel#sectionRule {{
         color: {C["a_muted"]};
         font-size: 11px;
         font-weight: 700;
-        letter-spacing: 2px;
+        letter-spacing: 3px;
         padding: 2px 0px;
     }}
     QLabel#fieldLabel {{
@@ -362,10 +384,10 @@ def get_main_stylesheet() -> str:
         background: transparent;
     }}
     QLabel#welcomeTitle {{
-        color: {C["a_hot"]};
+        color: {C["a_bright"]};
         font-size: 21px;
         font-weight: 700;
-        letter-spacing: 1px;
+        letter-spacing: 3px;
     }}
     QLabel#welcomeBody {{
         color: {C["a_mid"]};
@@ -379,9 +401,9 @@ def get_main_stylesheet() -> str:
 
     /* ── GROUPBOX ──────────────────────────────────────────────── */
     QGroupBox {{
-        background-color: rgba(17, 28, 22, 0.45);
+        background-color: {rgba("bg_inset", 0.45)};
         border: 1px solid {C["border"]};
-        border-radius: 8px;
+        border-radius: 3px;
         margin-top: 11px;
         padding: 20px 13px 13px 13px;
         font-family: {MONO};
@@ -396,7 +418,7 @@ def get_main_stylesheet() -> str:
         padding: 0 7px;
         background-color: {C["bg_raised"]};
         color: {C["a_bright"]};
-        letter-spacing: 2px;
+        letter-spacing: 3px;
     }}
 
     /* ── MISC ──────────────────────────────────────────────────── */
@@ -418,14 +440,14 @@ def get_status_pill_style(status: str) -> str:
     )
     if status == "live":
         return base + (f"color: {C['led_green']};"
-                       f" background-color: rgba(110, 255, 122, 0.10);"
+                       f" background-color: {rgba('led_green', 0.10)};"
                        f" border: 1px solid {C['led_green_dim']};")
     if status == "loading":
         return base + (f"color: {C['led_amber']};"
-                       f" background-color: rgba(255, 182, 66, 0.10);"
+                       f" background-color: {rgba('led_amber', 0.10)};"
                        f" border: 1px solid {C['led_amber_dim']};")
     return base + (f"color: {C['led_red']};"
-                   f" background-color: rgba(255, 95, 86, 0.10);"
+                   f" background-color: {rgba('led_red', 0.10)};"
                    f" border: 1px solid {C['led_red_dim']};")
 
 
@@ -433,24 +455,24 @@ def get_status_pill_style(status: str) -> str:
 
 def get_chat_line_style(role: str) -> str:
     """
-    Chat turns are readout blocks with a warm left rule — brighter for the
-    operator (you), dimmer for the machine.
+    Chat turns are readout blocks with a lit left rule — steel for the operator
+    (you), visor-orange for the machine.
     """
     C = COLORS
     if role == "user":
         return (
-            f"background-color: rgba(17, 28, 22, 0.55);"
+            f"background-color: {rgba('bg_inset', 0.55)};"
             f" border: 1px solid {C['border']};"
-            f" border-left: 3px solid {C['a_mid']};"
-            f" border-radius: 6px;"
+            f" border-left: 3px solid {C['a_muted']};"
+            f" border-radius: 3px;"
             f" padding: 9px 13px;"
             f" margin: 0px;"
         )
     return (
-        f"background-color: rgba(26, 43, 33, 0.55);"
+        f"background-color: {rgba('bg_panel', 0.55)};"
         f" border: 1px solid {C['border']};"
-        f" border-left: 3px solid {C['a_dim']};"
-        f" border-radius: 6px;"
+        f" border-left: 3px solid {C['ember']};"
+        f" border-radius: 3px;"
         f" padding: 9px 13px;"
         f" margin: 0px;"
     )

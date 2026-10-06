@@ -1,5 +1,5 @@
 """
-Backend Engine for Qwythos AI.
+Backend Engine for Cayde 420.
 
 Architecture:
   Ollama (port 11434, hosts the GGUF model)
@@ -29,6 +29,7 @@ import requests
 
 import settings
 import netutil
+import memory_vault
 from configs import derive_model_tag
 
 
@@ -555,6 +556,7 @@ class ModelManager(QThread):
                 encoding="utf-8",
                 errors="replace",
                 timeout=300,
+                creationflags=subprocess.CREATE_NO_WINDOW,
             )
 
             if process.returncode == 0:
@@ -595,6 +597,7 @@ class ModelPreloader(QThread):
                 encoding="utf-8",
                 errors="replace",
                 timeout=600,
+                creationflags=subprocess.CREATE_NO_WINDOW,
             )
             if process.returncode == 0:
                 self.progress_update.emit("Model loaded and kept warm for 24h.")
@@ -653,6 +656,10 @@ class OllamaBackend(QObject):
 
         # Conversation history
         self.conversation: List[Dict[str, str]] = []
+
+        # Whether the memory vault is injected into the system prompt. Notes are
+        # always kept on disk; this only controls whether they are sent.
+        self._memory_enabled = True
 
         # Inference settings (defaults match Modelfile)
         self.temperature = 0.2
@@ -730,21 +737,57 @@ class OllamaBackend(QObject):
         return preloader
 
     def get_system_prompt(self) -> str:
-        """Get the current system prompt if one is set."""
+        """Get the current system prompt if one is set.
+
+        Returns the persona *without* any injected memory block. Callers that
+        write this value back out (the Settings text box) need the bare persona —
+        otherwise every Apply would round-trip a block that compose_system_prompt
+        is about to append again.
+        """
+        return memory_vault.strip_vault(self._raw_system_prompt())
+
+    def _raw_system_prompt(self) -> str:
+        """The conversation's system message exactly as stored, vault included."""
         if self.conversation and self.conversation[0].get("role") == "system":
             return self.conversation[0].get("content", "")
         return ""
 
     def set_system_prompt(self, prompt: str):
-        """Set or update the system prompt at the start of the conversation."""
-        prompt = (prompt or "").strip()
-        if self.conversation and self.conversation[0].get("role") == "system":
-            if prompt:
-                self.conversation[0]["content"] = prompt
+        """Set or update the system prompt at the start of the conversation.
+
+        The persona is stored bare and the memory block is composed on top, so
+        the vault can change without the persona picking up a stale copy.
+        """
+        persona = memory_vault.strip_vault(prompt)
+        self._sync_system_message(persona)
+
+    def set_memory_enabled(self, enabled: bool):
+        """Turn vault injection on or off and re-compose immediately."""
+        self._memory_enabled = bool(enabled)
+        self._sync_system_message(self.get_system_prompt())
+
+    def refresh_memory(self):
+        """Re-compose the system prompt from the current vault contents.
+
+        Called after the vault is edited. With the vault empty or disabled this
+        is a no-op on the persona, so a model with its own baked-in SYSTEM block
+        keeps it.
+        """
+        self._sync_system_message(self.get_system_prompt())
+
+    def _sync_system_message(self, persona: str):
+        """Rebuild conversation[0] from the persona plus the vault block."""
+        composed = memory_vault.compose_system_prompt(
+            persona, enabled=self._memory_enabled
+        )
+        has_system = bool(self.conversation) and self.conversation[0].get("role") == "system"
+        if composed:
+            if has_system:
+                self.conversation[0]["content"] = composed
             else:
-                self.conversation.pop(0)
-        elif prompt:
-            self.conversation.insert(0, {"role": "system", "content": prompt})
+                self.conversation.insert(0, {"role": "system", "content": composed})
+        elif has_system:
+            self.conversation.pop(0)
 
     def get_engine_mode(self) -> str:
         return self.engine_mode
@@ -917,7 +960,7 @@ class OllamaBackend(QObject):
         Hot-swap connection endpoints.
 
         Takes effect immediately — the running session polls the new addresses
-        right away, no restart required. Persisted to ~/.qwythos/settings.json.
+        right away, no restart required. Persisted to .state/settings.json.
         Any argument left as None keeps its current value, and empty strings are
         ignored so a blank field can never wipe a working endpoint.
         """

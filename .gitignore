@@ -51,5 +51,6 @@ config.yaml
 .routing_mode
 scratchpad.md
 
-# Per-PC local state: endpoints, external weight paths, per-model tuning
+# Per-PC local state: endpoints, external weight paths, per-model tuning,
+# memory vault notes and the generated CLI system-prompt block
 .state/

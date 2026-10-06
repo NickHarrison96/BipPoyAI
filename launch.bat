@@ -1,5 +1,5 @@
 @echo off
-title Qwythos AI
+title Cayde 420
 cd /d "%~dp0"
 
 where python >nul 2>nul
@@ -23,7 +23,7 @@ if %errorlevel% neq 0 (
 python main.py %*
 if %errorlevel% neq 0 (
     echo.
-    echo Something went wrong while running Qwythos AI.
+    echo Something went wrong while running Cayde 420.
     echo Make sure dependencies are installed:
     echo     pip install -r requirements.txt
     pause

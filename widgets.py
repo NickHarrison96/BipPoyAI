@@ -1,5 +1,5 @@
 """
-Custom-painted components for the Pip-Boy theme.
+Custom-painted components for the Cayde 420 theme.
 
 QSS can't express texture, glow, or physical controls, so anything with depth
 gets painted here with QPainter.
@@ -28,7 +28,7 @@ def _c(key: str, alpha: int = 255) -> QColor:
     return col
 
 
-def apply_glow(widget: QWidget, color_key: str = "border_hot", radius: int = 18, alpha: int = 140):
+def apply_glow(widget: QWidget, color_key: str = "ember", radius: int = 18, alpha: int = 140):
     """Attach an outer glow. Qt implements this as a drop shadow with no offset."""
     eff = QGraphicsDropShadowEffect(widget)
     eff.setBlurRadius(radius)
@@ -42,9 +42,9 @@ def apply_glow(widget: QWidget, color_key: str = "border_hot", radius: int = 18,
 
 class CrackedBackdrop(QWidget):
     """
-    Full-window background: dark green field, vignette, and a network of
-    cracks with warm light behind them. Rendered once into a cached pixmap and
-    only regenerated on resize.
+    Full-window background: gunmetal field, vignette, and a network of panel
+    seams with visor-orange light behind them. Rendered once into a cached
+    pixmap and only regenerated on resize.
     """
 
     def __init__(self, parent=None, seed: int = 7, density: int = 16):
@@ -82,7 +82,7 @@ class CrackedBackdrop(QWidget):
         return pm
 
     def _paint_field(self, p: QPainter, w: int, h: int):
-        """Mottled green base with a couple of warm pools of light."""
+        """Mottled gunmetal base with a couple of pools of visor light."""
         g = QLinearGradient(0, 0, w * 0.4, h)
         g.setColorAt(0.0, _c("bg_raised"))
         g.setColorAt(0.55, _c("bg"))
@@ -95,8 +95,8 @@ class CrackedBackdrop(QWidget):
             cx, cy = rng.uniform(0, w), rng.uniform(0, h)
             rad = rng.uniform(min(w, h) * 0.25, min(w, h) * 0.6)
             rg = QRadialGradient(cx, cy, rad)
-            rg.setColorAt(0.0, _c("ember", 26))
-            rg.setColorAt(1.0, _c("ember", 0))
+            rg.setColorAt(0.0, _c("bg_raised", 120))
+            rg.setColorAt(1.0, _c("bg_raised", 0))
             p.setBrush(QBrush(rg))
             p.drawEllipse(QPointF(cx, cy), rad, rad)
 
@@ -117,20 +117,22 @@ class CrackedBackdrop(QWidget):
         steps = max(int(length / 11), 2)
         seg = length / steps
         for _ in range(steps):
-            ca += rng.uniform(-0.42, 0.42)
+            # slight wander only — seams are gaps between panels, not roots
+            ca += rng.uniform(-0.16, 0.16)
             cx += math.cos(ca) * seg
             cy += math.sin(ca) * seg
             path.lineTo(cx, cy)
 
         # pass 1 — wide ember bleed
-        p.setPen(QPen(_c("ember", 34), width * 4.5, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        p.setPen(QPen(_c("ember", 12), width * 5.5, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
         p.drawPath(path)
-        # pass 2 — mid warmth
-        p.setPen(QPen(_c("ember", 78), width * 1.9, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        # pass 2 — the seam itself, barely lit
+        p.setPen(QPen(_c("ember", 46), width * 1.4, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
         p.drawPath(path)
-        # pass 3 — hot core
-        p.setPen(QPen(_c("a_bright", 58), max(width * 0.45, 0.5), Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
-        p.drawPath(path)
+        # pass 3 — a hairline of hot core, only on the widest seams
+        if width > 2.0:
+            p.setPen(QPen(_c("a_bright", 34), max(width * 0.35, 0.5), Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+            p.drawPath(path)
 
         # branch
         for _ in range(rng.randint(1, 2)):
@@ -146,8 +148,8 @@ class CrackedBackdrop(QWidget):
     def _paint_vignette(self, p: QPainter, w: int, h: int):
         rg = QRadialGradient(w / 2, h / 2, max(w, h) * 0.78)
         rg.setColorAt(0.0, QColor(0, 0, 0, 0))
-        rg.setColorAt(0.62, QColor(0, 0, 0, 40))
-        rg.setColorAt(1.0, QColor(0, 0, 0, 150))
+        rg.setColorAt(0.62, QColor(0, 0, 0, 26))
+        rg.setColorAt(1.0, QColor(0, 0, 0, 104))
         p.setPen(Qt.NoPen)
         p.setBrush(QBrush(rg))
         p.drawRect(0, 0, w, h)
@@ -341,7 +343,11 @@ class Knob(QWidget):
 # ─── Signal meter (the little bar readout) ────────────────────────────────────
 
 class BarMeter(QWidget):
-    """Segmented level readout — used for tok/s. `level` is 0.0–1.0."""
+    """Segmented level readout — used for tok/s. `level` is 0.0–1.0.
+
+    The ramp runs bone → visor orange, so a hot meter reads as load rather
+    than as an error. Status LEDs are the only place green is allowed.
+    """
 
     def __init__(self, segments: int = 12, parent=None):
         super().__init__(parent)
@@ -356,10 +362,11 @@ class BarMeter(QWidget):
     def paintEvent(self, event):
         p = QPainter(self)
         lit = int(self._level * self._segments)
+        hot_at = self._segments * 0.7
         for i in range(self._segments):
             x = i * 5
             if i < lit:
-                col = _c("led_green") if i < self._segments * 0.7 else _c("led_amber")
+                col = _c("a_bright") if i < hot_at else _c("ember")
             else:
                 col = _c("a_dim", 90)
             p.fillRect(x, 3, 3, self.height() - 6, col)
@@ -369,9 +376,9 @@ class BarMeter(QWidget):
 
 class MascotGlyph(QWidget):
     """
-    An original line-art figure for the welcome screen — a stylised operator in
-    a headset giving a thumbs-up. Drawn from scratch; deliberately not a
-    likeness of any existing character.
+    An angular exo-visor glyph for the welcome screen — a bone plate silhouette
+    with one lit horizontal visor. Drawn from scratch out of straight lines;
+    deliberately not a likeness of any existing character.
     """
 
     def __init__(self, size: int = 92, parent=None):
@@ -385,42 +392,46 @@ class MascotGlyph(QWidget):
         s = self._s
         u = s / 100.0  # unit scale so the drawing is resolution independent
 
-        pen = QPen(_c("a_bright"), 2.0 * u, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin)
-        p.setPen(pen)
         p.setBrush(Qt.NoBrush)
+        p.setPen(QPen(_c("a_mid"), 2.0 * u, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
 
-        # head
-        p.drawEllipse(QPointF(50 * u, 30 * u), 16 * u, 17 * u)
-        # headset band + earcup
-        p.drawArc(QRectF(31 * u, 11 * u, 38 * u, 34 * u), 20 * 16, 140 * 16)
-        p.setBrush(QBrush(_c("a_mid")))
-        p.drawEllipse(QPointF(32 * u, 31 * u), 4.5 * u, 6 * u)
+        # cranium — a flattened hexagon, wider at the temples
+        skull = QPainterPath(QPointF(50 * u, 14 * u))
+        skull.lineTo(74 * u, 26 * u)
+        skull.lineTo(78 * u, 46 * u)
+        skull.lineTo(66 * u, 64 * u)
+        skull.lineTo(50 * u, 72 * u)
+        skull.lineTo(34 * u, 64 * u)
+        skull.lineTo(22 * u, 46 * u)
+        skull.lineTo(26 * u, 26 * u)
+        skull.closeSubpath()
+        p.drawPath(skull)
+
+        # cheek seams
+        p.setPen(QPen(_c("border_warm"), 1.4 * u, Qt.SolidLine, Qt.RoundCap))
+        p.drawLine(QPointF(30 * u, 40 * u), QPointF(40 * u, 58 * u))
+        p.drawLine(QPointF(70 * u, 40 * u), QPointF(60 * u, 58 * u))
+
+        # visor — the one lit element
+        visor = QPainterPath(QPointF(28 * u, 40 * u))
+        visor.lineTo(72 * u, 40 * u)
+        visor.lineTo(68 * u, 51 * u)
+        visor.lineTo(32 * u, 51 * u)
+        visor.closeSubpath()
+        p.setPen(QPen(_c("ember"), 1.6 * u, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        p.setBrush(QBrush(_c("ember", 46)))
+        p.drawPath(visor)
+
+        # brow ridge over the visor
         p.setBrush(Qt.NoBrush)
-        # mic boom
-        p.drawLine(QPointF(32 * u, 37 * u), QPointF(44 * u, 43 * u))
+        p.setPen(QPen(_c("a_bright"), 1.8 * u, Qt.SolidLine, Qt.RoundCap))
+        p.drawLine(QPointF(25 * u, 36 * u), QPointF(75 * u, 36 * u))
 
-        # eyes
-        p.setBrush(QBrush(_c("a_hot")))
-        p.drawEllipse(QPointF(44 * u, 28 * u), 1.9 * u, 1.9 * u)
-        p.drawEllipse(QPointF(56 * u, 28 * u), 1.9 * u, 1.9 * u)
-        p.setBrush(Qt.NoBrush)
-        # grin
-        p.drawArc(QRectF(42 * u, 30 * u, 16 * u, 12 * u), 200 * 16, 140 * 16)
-
-        # torso
-        path = QPainterPath(QPointF(38 * u, 92 * u))
-        path.lineTo(38 * u, 60 * u)
-        path.quadTo(50 * u, 48 * u, 62 * u, 60 * u)
-        path.lineTo(62 * u, 92 * u)
-        p.drawPath(path)
-
-        # thumbs-up arm
-        p.drawLine(QPointF(62 * u, 66 * u), QPointF(74 * u, 60 * u))
-        p.drawEllipse(QPointF(78 * u, 55 * u), 5 * u, 6 * u)
-        p.drawLine(QPointF(78 * u, 49 * u), QPointF(78 * u, 44 * u))
-
-        # resting arm
-        p.drawLine(QPointF(38 * u, 66 * u), QPointF(28 * u, 74 * u))
+        # mandible and neck
+        p.setPen(QPen(_c("a_mid"), 2.0 * u, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        p.drawLine(QPointF(44 * u, 66 * u), QPointF(44 * u, 84 * u))
+        p.drawLine(QPointF(56 * u, 66 * u), QPointF(56 * u, 84 * u))
+        p.drawLine(QPointF(38 * u, 86 * u), QPointF(62 * u, 86 * u))
 
 
 # ─── Bottom hardware console ──────────────────────────────────────────────────
@@ -456,9 +467,9 @@ class HardwareStrip(QFrame):
         plate.setFixedSize(34, 20)
         plate.setStyleSheet(
             f"background-color: {COLORS['bg_deep']};"
-            f" color: {COLORS['a_hot']};"
+            f" color: {COLORS['ember']};"
             f" border: 1px solid {COLORS['border_warm']};"
-            f" border-radius: 3px;"
+            f" border-radius: 2px;"
             f" font-size: 10px; font-weight: 700;"
         )
         self.plate = plate

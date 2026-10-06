@@ -102,7 +102,7 @@ def show_config(working_dir: Path):
 # ─── Main menu ────────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description="Qwythos AI Hardware Tuning TUI")
+    parser = argparse.ArgumentParser(description="Cayde 420 Hardware Tuning TUI")
     parser.add_argument("--auto", "-a", action="store_true", help="Auto-detect hardware, apply recommendations, and save immediately")
     parser.add_argument("--show", action="store_true", help="Show current hardware and config without entering the interactive menu")
     args = parser.parse_args()

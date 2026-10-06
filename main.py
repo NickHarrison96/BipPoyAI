@@ -1,8 +1,8 @@
 """
-BipPoyAI  — Your Locally Hosted Sidekick.
+Cayde 420 — Your Locally Hosted Sidekick.
 
-A polished PySide6 desktop GUI for chatting with the Qwythos-9B model
-running locally through Ollama + LiteLLM proxy.
+A polished PySide6 desktop GUI for chatting with a local GGUF model
+running on this machine through Ollama + the LiteLLM proxy.
 
 Usage:
     python main.py
@@ -31,9 +31,9 @@ QMessageBox, QFileDialog, QCheckBox, QSystemTrayIcon, QMenu,
       QSizePolicy,
   )
 from PySide6.QtCore import Qt, QTimer, QSize, Signal
-from PySide6.QtGui import QKeyEvent, QShortcut, QKeySequence, QIcon, QPixmap, QPainter, QColor, QPen, QAction, QDropEvent, QDragEnterEvent
+from PySide6.QtGui import QKeyEvent, QShortcut, QKeySequence, QIcon, QPixmap, QPainter, QColor, QPen, QAction, QDropEvent, QDragEnterEvent, QPainterPath
 
-from styles import get_main_stylesheet, COLORS
+from styles import get_main_stylesheet, rgba, COLORS, APP_NAME, ASSISTANT_NAME, TITLE
 from backend import OllamaBackend
 from widgets import (
     CrackedBackdrop, ScanlineOverlay, LEDDot, HardwareStrip,
@@ -42,6 +42,7 @@ from widgets import (
 from configs import ModelConfig, load_full, write_all
 from hardware import detect as detect_hardware
 import history
+import memory_vault
 import model_registry
 
 
@@ -150,7 +151,7 @@ class MessageBubble(QFrame):
         layout.setSpacing(4)
 
         # Role label
-        role_label = QLabel("You" if role == "user" else "Qwythos")
+        role_label = QLabel("You" if role == "user" else ASSISTANT_NAME)
         role_label.setObjectName("mutedLabel")
         role_label.setStyleSheet(
             f"font-size: 11px; font-weight: 600; color: {COLORS['text_muted']}; "
@@ -314,6 +315,8 @@ class SettingsPanel(QFrame):
         session_layout.addRow("System Prompt:", self.system_prompt_edit)
 
         layout.addWidget(session_group)
+
+        layout.addWidget(self._build_memory_group())
 
         # Connect live model list updates from Ollama backend
         self.backend.model_list_updated.connect(self._on_model_list_updated)
@@ -612,6 +615,134 @@ class SettingsPanel(QFrame):
         # Poll once immediately
         self._sync_service_status()
 
+    # ── Memory vault ──
+
+    def _build_memory_group(self) -> QGroupBox:
+        """Vault editor. One markdown note at a time; the list drives the picker."""
+        group = QGroupBox("Memory Vault")
+        v = QVBoxLayout(group)
+        v.setSpacing(8)
+
+        self.memory_enabled_check = QCheckBox("Inject memory into system prompt")
+        self.memory_enabled_check.setChecked(True)
+        self.memory_enabled_check.setToolTip(
+            "When off, notes are kept but not sent to the model."
+        )
+        self.memory_enabled_check.toggled.connect(self._on_memory_enabled_toggled)
+        self.backend.set_memory_enabled(self.memory_enabled_check.isChecked())
+        v.addWidget(self.memory_enabled_check)
+
+        self.memory_combo = QComboBox()
+        self.memory_combo.currentTextChanged.connect(self._on_memory_entry_changed)
+        v.addWidget(self.memory_combo)
+
+        row = QHBoxLayout()
+        row.setSpacing(6)
+
+        new_btn = QPushButton("New")
+        new_btn.setObjectName("ghostButton")
+        new_btn.clicked.connect(self._new_memory_entry)
+        row.addWidget(new_btn)
+
+        del_btn = QPushButton("Delete")
+        del_btn.setObjectName("ghostButton")
+        del_btn.clicked.connect(self._delete_memory_entry)
+        row.addWidget(del_btn)
+
+        self.memory_status_label = QLabel("")
+        self.memory_status_label.setObjectName("hintLabel")
+        row.addWidget(self.memory_status_label, 1)
+
+        v.addLayout(row)
+
+        self.memory_edit = QTextEdit()
+        self.memory_edit.setPlaceholderText(
+            "Notes the model should remember next session..."
+        )
+        self.memory_edit.textChanged.connect(self._update_memory_status)
+        v.addWidget(self.memory_edit)
+
+        self._refresh_memory_list()
+        return group
+
+    def _current_memory_name(self) -> str:
+        return self.memory_combo.currentText().strip()
+
+    def _refresh_memory_list(self, select: str = ""):
+        """Repopulate the entry dropdown, optionally selecting a given name."""
+        keep = select or self._current_memory_name()
+        self.memory_combo.blockSignals(True)
+        self.memory_combo.clear()
+        names = [e["name"] for e in memory_vault.list_entries()]
+        if not names:
+            names = [""]
+        self.memory_combo.addItems(names)
+        if keep and keep in names:
+            self.memory_combo.setCurrentIndex(names.index(keep))
+        self.memory_combo.blockSignals(False)
+        self._on_memory_entry_changed(self.memory_combo.currentText())
+
+    def _on_memory_entry_changed(self, name: str):
+        """Load the selected note into the editor and show its size."""
+        name = (name or "").strip()
+        self.memory_edit.setPlainText(memory_vault.read_entry(name) if name else "")
+
+    def _update_memory_status(self):
+        text = self.memory_edit.toPlainText().strip()
+        tokens = memory_vault.token_estimate(text)
+        budget = memory_vault.DEFAULT_MAX_CHARS
+        over = len(text) > budget
+        self.memory_status_label.setText(
+            f"~{tokens} tokens{'  ·  over budget' if over else ''}"
+        )
+        self.memory_status_label.setStyleSheet(
+            f"color: {COLORS['led_amber'] if over else COLORS['a_dim']};"
+            f" font-size: 11px; background: transparent;"
+        )
+
+    def _on_memory_enabled_toggled(self, enabled: bool):
+        # Re-compose immediately so unticking actually takes effect without
+        # requiring a separate Apply.
+        self.backend.set_memory_enabled(enabled)
+        self._update_memory_status()
+
+    def _save_memory_entry(self):
+        """Persist the editor's contents to the selected entry."""
+        name = self._current_memory_name()
+        if not name:
+            return False
+        if memory_vault.write_entry(name, self.memory_edit.toPlainText()) is None:
+            return False
+        self.backend.refresh_memory()
+        self._update_memory_status()
+        return True
+
+    def _new_memory_entry(self):
+        """Create an entry and focus the editor for naming."""
+        base, n = "memory", 1
+        name = base
+        while (Path(memory_vault.MEMORY_DIR) / f"{name}.md").exists():
+            n += 1
+            name = f"{base}-{n}"
+        if memory_vault.write_entry(name, "") is None:
+            return
+        self._refresh_memory_list(select=name)
+        self.memory_edit.setFocus()
+
+    def _delete_memory_entry(self):
+        name = self._current_memory_name()
+        if not name:
+            return
+        reply = QMessageBox.question(
+            self, "Delete Memory", f"Delete '{name}'?\n\nThis cannot be undone."
+        )
+        if reply != QMessageBox.Yes:
+            return
+        memory_vault.delete_entry(name)
+        self._refresh_memory_list()
+        self.backend.refresh_memory()
+        self._update_memory_status()
+
     def _refresh_gguf_list(self):
         """Populate the GGUF selector with ONLY the GGUFs inside the project's
         Models/ directory. Out-of-project weights are tracked in
@@ -894,6 +1025,7 @@ class SettingsPanel(QFrame):
         if tag:
             self.backend.set_model_tag(tag)
         self.backend.set_system_prompt(self.system_prompt_edit.toPlainText().strip())
+        self._save_memory_entry()  # persists the editor before Apply's refresh
         self.info_label.setText(f"Model: {self.backend.get_model_tag()}")
 
         # Endpoints hot-swap immediately — no restart required
@@ -1063,12 +1195,12 @@ class SettingsPanel(QFrame):
     def _toggle_litellm(self):
         """Start or kill LiteLLM process based on current state."""
         import subprocess
-        import shutil
 
         # Check if LiteLLM is currently running
         cmd = ["tasklist", "/FI", "IMAGENAME eq litellm.exe", "/FO", "CSV"]
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+            result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                                    creationflags=subprocess.CREATE_NO_WINDOW)
             is_running = "litellm.exe" in result.stdout
         except Exception:
             is_running = False
@@ -1076,7 +1208,8 @@ class SettingsPanel(QFrame):
         if is_running:
             # Kill all LiteLLM processes
             try:
-                subprocess.run(["taskkill", "/F", "/IM", "litellm.exe"], capture_output=True, text=True, encoding="utf-8", errors="replace")
+                subprocess.run(["taskkill", "/F", "/IM", "litellm.exe"], capture_output=True, text=True, encoding="utf-8", errors="replace",
+                               creationflags=subprocess.CREATE_NO_WINDOW)
                 self.litellm_status_label.setText("LiteLLM: Stopped")
                 self.litellm_toggle_btn.setText("Start LiteLLM")
                 self.litellm_toggle_btn.setProperty("class", "secondaryButton")
@@ -1089,75 +1222,23 @@ class SettingsPanel(QFrame):
             except Exception as e:
                 QMessageBox.critical(self, "Kill Failed", f"Failed to stop LiteLLM:\n\n{str(e)}")
         else:
-            # Start LiteLLM
-            litellm_path = shutil.which("litellm")
-            if not litellm_path:
-                QMessageBox.warning(
-                    self, "LiteLLM Not Found",
-                    "LiteLLM is not installed. Install with: pip install litellm"
-                )
-                return
-
-            # Use the panel's URL and API key settings
-            url = self.litellm_url_edit.text().strip() or "http://127.0.0.1:4000"
-            api_key = self.litellm_key_edit.text().strip() or "sk-ant-api03-local-mock-key-for-ollama-bypass-000000000000000000"
-
-            # Parse URL to get host and port
-            import re
-            match = re.match(r"https?://([^:]+):(\d+)", url)
-            if not match:
-                QMessageBox.warning(self, "Invalid URL", "Please enter a valid LiteLLM URL (e.g., http://127.0.0.1:4000)")
-                return
-
-            host, port = match.groups()
-
-            # Start LiteLLM in a new console window
-            silent = self.silent_launch_check.isChecked()
-            try:
-                if silent:
-                    # Start without console window
-                    startupinfo = subprocess.STARTUPINFO()
-                    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-                    subprocess.Popen(
-                        [
-                            litellm_path,
-                            "--model", "openai/o1-mini",
-                            "--host", host,
-                            "--port", port,
-                            "--api_key", api_key,
-                        ],
-                        startupinfo=startupinfo,
-                        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                    )
-                else:
-                    # Show console window
-                    subprocess.Popen(
-                        [
-                            "cmd", "/c", "start", "cmd", "/k",
-                            f"litellm --model openai/o1-mini --host {host} --port {port} --api_key {api_key}"
-                        ],
-                        creationflags=subprocess.CREATE_NEW_CONSOLE,
-                    )
-
-                self.litellm_status_label.setText("LiteLLM: Starting...")
-                self.litellm_toggle_btn.setText("Kill LiteLLM")
-                self.litellm_toggle_btn.setProperty("class", "dangerButton")
-                self.litellm_toggle_btn.style().unpolish(self.litellm_toggle_btn)
-                self.litellm_toggle_btn.style().polish(self.litellm_toggle_btn)
-
-                # Update backend URLs
-                self.backend.update_urls(
-                    ollama_base_url=self.ollama_url_edit.text(),
-                    litellm_base_url=self.litellm_url_edit.text(),
-                    litellm_api_key=self.litellm_key_edit.text(),
-                )
-
-                # Poll for status
-                QTimer.singleShot(2000, self.backend.check_status)
-            except Exception as e:
-                QMessageBox.critical(self, "Start Failed", f"Failed to start LiteLLM:\n\n{str(e)}")
+            # Start LiteLLM through the backend starter rather than building a
+            # command line here. This branch used to run
+            #   litellm --model openai/o1-mini --host ... --port ... --api_key ...
+            # and it was broken two ways: `--api_key` is not an option in
+            # litellm 1.102+ (the CLI aborts with "No such option"), and
+            # `--model openai/o1-mini` bypassed config.yaml entirely to point
+            # the proxy at OpenAI — so the one file that routes the exact model
+            # tag to Ollama was never read, and a working start would have
+            # tried to reach the internet. LiteLLMStarter already checks the
+            # CLI, config.yaml, port conflicts and health, honours the silent
+            # launch setting, and forces UTF-8 in the child.
+            self.backend.update_urls(
+                ollama_base_url=self.ollama_url_edit.text(),
+                litellm_base_url=self.litellm_url_edit.text(),
+                litellm_api_key=self.litellm_key_edit.text(),
+            )
+            self._start_litellm()
 
     def _toggle_ollama(self):
         """Start or kill Ollama process based on current state."""
@@ -1166,7 +1247,8 @@ class SettingsPanel(QFrame):
         # Check if Ollama is currently running
         cmd = ["tasklist", "/FI", "IMAGENAME eq ollama.exe", "/FO", "CSV"]
         try:
-            result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+            result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                                    creationflags=subprocess.CREATE_NO_WINDOW)
             is_running = "ollama.exe" in result.stdout
         except Exception:
             is_running = False
@@ -1174,7 +1256,8 @@ class SettingsPanel(QFrame):
         if is_running:
             # Kill all Ollama processes
             try:
-                subprocess.run(["taskkill", "/F", "/IM", "ollama.exe"], capture_output=True, text=True, encoding="utf-8", errors="replace")
+                subprocess.run(["taskkill", "/F", "/IM", "ollama.exe"], capture_output=True, text=True, encoding="utf-8", errors="replace",
+                               creationflags=subprocess.CREATE_NO_WINDOW)
                 self.ollama_status_label.setText("Ollama: Stopped")
                 self.ollama_toggle_btn.setText("Start Ollama")
                 self.ollama_toggle_btn.setProperty("class", "secondaryButton")
@@ -1234,11 +1317,19 @@ class SettingsPanel(QFrame):
                 QMessageBox.critical(self, "Start Failed", f"Failed to start Ollama:\n\n{str(e)}")
 
     def _sync_service_status(self):
-        """Update service status labels and button states based on tasklist."""
+        """Update service status labels and button states based on tasklist.
+
+        CREATE_NO_WINDOW matters here more than anywhere else: this runs every
+        two seconds, and a windowed PyInstaller exe has no console for the
+        child to inherit, so each bare `tasklist` allocated a fresh terminal
+        window and the app appeared to spam them. From `python main.py` the
+        children inherited the shell's console and the bug was invisible.
+        """
         # Check LiteLLM status
         try:
             cmd = ["tasklist", "/FI", "IMAGENAME eq litellm.exe", "/FO", "CSV"]
-            result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+            result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                                    creationflags=subprocess.CREATE_NO_WINDOW)
             litellm_running = "litellm.exe" in result.stdout
         except Exception:
             litellm_running = False
@@ -1260,7 +1351,8 @@ class SettingsPanel(QFrame):
         # Check Ollama status
         try:
             cmd = ["tasklist", "/FI", "IMAGENAME eq ollama.exe", "/FO", "CSV"]
-            result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+            result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                                    creationflags=subprocess.CREATE_NO_WINDOW)
             ollama_running = "ollama.exe" in result.stdout
         except Exception:
             ollama_running = False
@@ -1333,18 +1425,18 @@ class SettingsPanel(QFrame):
 # ─── Main Window ─────────────────────────────────────────────────────────────
 
 class MainWindow(QMainWindow):
-    """The main Qwythos AI chat window."""
+    """The main Cayde 420 chat window."""
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Qwythos AI")
+        self.setWindowTitle(APP_NAME)
         self.setMinimumSize(960, 680)
         self.resize(1140, 780)
 
         # Backend
         self.backend = OllamaBackend(working_dir=SCRIPT_DIR)
 
-        # Pip-Boy visual layers (sit behind all content)
+        # Painted theme layers (sit behind all content)
         self._backdrop = CrackedBackdrop(self, seed=42, density=18)
         self._backdrop.resize(self.size())
         self._scanlines = ScanlineOverlay(self, spacing=3, alpha=20)
@@ -1378,8 +1470,8 @@ class MainWindow(QMainWindow):
         self.status_banner = QFrame()
         self.status_banner.setObjectName("statusBanner")
         self.status_banner.setStyleSheet(
-            f"background-color: rgba(245, 158, 11, 0.12);"
-            f" border-bottom: 1px solid rgba(245, 158, 11, 0.25);"
+            f"background-color: {rgba('ember', 0.12)};"
+            f" border-bottom: 1px solid {rgba('ember', 0.25)};"
             f" padding: 8px 16px;"
         )
         banner_layout = QHBoxLayout(self.status_banner)
@@ -1474,18 +1566,23 @@ class MainWindow(QMainWindow):
         self._setup_tray()
 
     def _make_tray_icon(self) -> QIcon:
-        """Generate a simple amber-on-green Pip-Boy tray icon at runtime."""
+        """Generate the visor-glyph tray icon at runtime — no asset file needed."""
         pm = QPixmap(64, 64)
-        pm.fill(QColor("#16241c"))
+        pm.fill(QColor(COLORS["bg"]))
         p = QPainter(pm)
         p.setRenderHint(QPainter.Antialiasing, True)
-        # outer ring
-        p.setPen(QPen(QColor("#c9a961"), 4))
-        p.drawEllipse(6, 6, 52, 52)
-        # inner dot
-        p.setBrush(QColor("#ffd98a"))
-        p.setPen(Qt.NoPen)
-        p.drawEllipse(22, 22, 20, 20)
+        # outer hex plate
+        plate = QPainterPath()
+        plate.moveTo(32, 5)
+        for x, y in ((57, 18), (57, 46), (32, 59), (7, 46), (7, 18)):
+            plate.lineTo(x, y)
+        plate.closeSubpath()
+        p.setPen(QPen(QColor(COLORS["border_warm"]), 3))
+        p.setBrush(Qt.NoBrush)
+        p.drawPath(plate)
+        # lit visor bar
+        p.setPen(QPen(QColor(COLORS["ember"]), 5, Qt.SolidLine, Qt.RoundCap))
+        p.drawLine(17, 32, 47, 32)
         p.end()
         return QIcon(pm)
 
@@ -1496,7 +1593,7 @@ class MainWindow(QMainWindow):
             return
 
         self._tray = QSystemTrayIcon(self._make_tray_icon(), self)
-        self._tray.setToolTip("Qwythos AI")
+        self._tray.setToolTip(APP_NAME)
 
         # Enable drag-and-drop for the main window
         self.setAcceptDrops(True)
@@ -1539,7 +1636,7 @@ class MainWindow(QMainWindow):
             event.ignore()
             self.hide()
             self._tray.showMessage(
-                "Qwythos AI", "Still running in the system tray.",
+                APP_NAME, "Still running in the system tray.",
                 QSystemTrayIcon.Information, 2000,
             )
         else:
@@ -1707,10 +1804,11 @@ class MainWindow(QMainWindow):
         layout = QHBoxLayout(header)
         layout.setContentsMargins(20, 0, 16, 0)
 
-        # Logo / Title
-        title = QLabel("✦  Qwythos AI")
+        # Logo / Title — the tracked-out name carries the Destiny feel
+        title = QLabel(TITLE)
         title.setStyleSheet(
-            f"font-size: 20px; font-weight: 700; color: {COLORS['text_primary']};"
+            f"font-size: 20px; font-weight: 700; letter-spacing: 4px;"
+            f" color: {COLORS['text_primary']};"
             f" background: transparent;"
         )
         layout.addWidget(title)
@@ -1755,6 +1853,16 @@ class MainWindow(QMainWindow):
         claude_btn.setToolTip("Launch the Claude CLI in a new terminal, routed through LiteLLM → Ollama")
         claude_btn.clicked.connect(self._launch_claude_cli)
         layout.addWidget(claude_btn)
+
+        # OpenCode — same spoofed endpoint, different client
+        opencode_btn = QPushButton("⬡  OpenCode")
+        opencode_btn.setObjectName("secondaryButton")
+        opencode_btn.setFixedHeight(32)
+        opencode_btn.setToolTip(
+            "Write the local provider into OpenCode's config and launch it"
+        )
+        opencode_btn.clicked.connect(self._launch_opencode)
+        layout.addWidget(opencode_btn)
 
         # Settings toggle
         self.settings_btn = QPushButton("⚙  Settings")
@@ -1870,10 +1978,11 @@ class MainWindow(QMainWindow):
         mascot = MascotGlyph(size=96)
         wlayout.addWidget(mascot, alignment=Qt.AlignHCenter)
 
-        title = QLabel("Welcome to Qwythos AI")
+        title = QLabel(f"Welcome to {APP_NAME}")
         title.setAlignment(Qt.AlignCenter)
         title.setStyleSheet(
-            f"font-size: 22px; font-weight: 700; color: {COLORS['text_primary']};"
+            f"font-size: 22px; font-weight: 700; letter-spacing: 3px;"
+            f" color: {COLORS['text_primary']};"
             f" background: transparent;"
         )
         wlayout.addWidget(title)
@@ -2039,22 +2148,84 @@ class MainWindow(QMainWindow):
         env["ANTHROPIC_API_KEY"] = ""
         env["CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS"] = "1"
         env["ANTHROPIC_MODEL"] = claude_model
+
+        # The vault reaches the CLI as a file rather than an argv string: the
+        # block can be ~10k characters, which would hit the Windows command-line
+        # limit and be a quoting nightmare through `start cmd /k`. An empty vault
+        # writes nothing and the flag is omitted entirely.
+        claude_cmd = ["claude"]
+        block_file = memory_vault.write_block_file(memory_vault.build_block())
+        if block_file:
+            claude_cmd += ["--append-system-prompt-file", str(block_file)]
+
         try:
             # No --model flag: Claude Code validates model names against its own
             # known list and stalls on local Ollama tags. ANTHROPIC_MODEL above
-            # selects the model, and LiteLLM's "*" wildcard routes it.
+            # selects the model, and config.yaml routes that exact tag.
             if os.name == "nt":
+                # `start cmd /k` takes one command string, so the argv has to be
+                # joined and quoted by hand. The block-file path is ours and has
+                # no spaces beyond the user profile dir, but quote regardless.
+                inner = " ".join(f'"{a}"' if " " in a else a for a in claude_cmd)
                 _subprocess.Popen(
-                    ["cmd", "/c", "start", "cmd", "/k", "claude"],
+                    ["cmd", "/c", "start", "cmd", "/k", inner],
                     env=env, cwd=SCRIPT_DIR,
                 )
             else:
                 _subprocess.Popen(
-                    ["x-terminal-emulator", "-e", "claude"],
+                    ["x-terminal-emulator", "-e"] + claude_cmd,
                     env=env, cwd=SCRIPT_DIR,
                 )
         except OSError as e:
             QMessageBox.critical(self, "Launch Failed", str(e))
+
+    def _launch_opencode(self):
+        """Point OpenCode at the local stack and start it.
+
+        Same spoofed endpoint the Claude CLI uses — OpenCode just needs to be
+        told it exists. The provider block is merged into the user's own
+        opencode.json (backed up first) rather than replacing the file, since it
+        may already carry providers and MCP servers they care about.
+        """
+        import shutil as _shutil
+        if not _shutil.which("opencode"):
+            QMessageBox.warning(
+                self, "OpenCode Not Found",
+                "The 'opencode' command is not in your PATH.\n\n"
+                "Install it from https://opencode.ai, or write the provider "
+                "config by hand with:\n"
+                "    python opencode_bridge.py --print"
+            )
+            return
+
+        if self.backend.get_engine_mode() != "direct" and not self._litellm_live:
+            QMessageBox.warning(
+                self, "LiteLLM Offline",
+                "OpenCode needs LiteLLM to reach the local model.\n"
+                "Start LiteLLM first (click 'Fix' in the status banner)."
+            )
+            return
+
+        import opencode_bridge
+        try:
+            path = opencode_bridge.write_config(Path(SCRIPT_DIR))
+        except SystemExit as e:
+            QMessageBox.critical(self, "OpenCode Config", str(e))
+            return
+        except OSError as e:
+            QMessageBox.critical(self, "OpenCode Config", str(e))
+            return
+
+        tag = self.backend.get_model_tag()
+        try:
+            opencode_bridge.launch(Path(SCRIPT_DIR))
+        except OSError as e:
+            QMessageBox.information(
+                self, "OpenCode",
+                f"Provider written to:\n{path}\n\n"
+                f"Could not start OpenCode ({e}).\n"
+                f"Launch it yourself with:  opencode -m cayde/{tag}"
+            )
 
     def _install_model(self):
         """Create the model in Ollama from the Modelfile."""
@@ -2264,7 +2435,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Nothing to Save", "The conversation is empty.")
             return
 
-        default_name = Path.home() / "qwythos_conversation.md"
+        default_name = Path.home() / "cayde420_conversation.md"
         path, _ = QFileDialog.getSaveFileName(
             self, "Save Conversation", str(default_name),
             "Markdown (*.md);;Text Files (*.txt);;All Files (*)",
@@ -2272,9 +2443,9 @@ class MainWindow(QMainWindow):
         if not path:
             return
 
-        lines = ["# Qwythos AI Conversation", ""]
+        lines = [f"# {APP_NAME} Conversation", ""]
         for msg in self.backend.conversation:
-            role = "**You**" if msg["role"] == "user" else "**Qwythos**"
+            role = "**You**" if msg["role"] == "user" else f"**{ASSISTANT_NAME}**"
             lines.append(role)
             lines.append("")
             lines.append(msg["content"])

@@ -1,4 +1,4 @@
-# BipPoyAI — Project Bible
+# Cayde 420 — Project Bible
 
 > This file is the single source of truth for project context.
 > Read it fully before making any changes. Keep it updated as things ship.
@@ -7,11 +7,11 @@
 
 ## What This Project Is
 
-**BipPoyAI** (branded "Qwythos AI") is a **local-only AI desktop application** for Windows.
+**Cayde 420** is a **local-only AI desktop application** for Windows.
 It lets you run a GGUF model entirely offline using:
 
 ```
-User (Claude CLI or GUI chat)
+User (Claude CLI, OpenCode, or GUI chat)
         │
         ▼
   LiteLLM Proxy  :4000
@@ -44,9 +44,13 @@ and Ollama emits non-ASCII bytes; on a cp437/cp1252 console these raise
 LiteLLM spawns need `PYTHONIOENCODING=utf-8` + `PYTHONUTF8=1`, and every
 `subprocess.run(..., text=True)` needs `encoding="utf-8", errors="replace"`.
 
-There are **two ways to use the stack:**
+There are **three ways to use the stack:**
 1. **GUI** (`main.py`) — chat interface, sends requests to LiteLLM directly
 2. **Claude CLI** — `claude` (no `--model`; `ANTHROPIC_MODEL` is set), routed through LiteLLM → Ollama
+3. **OpenCode** — same spoofed Anthropic endpoint, different client. Its provider
+   config is a JSON file OpenCode owns, so `opencode_bridge.py` merges one
+   namespaced `cayde` provider block into `~/.config/opencode/opencode.json` and
+   leaves everything else alone. Never rewrite that whole file to add one entry.
 
 ---
 
@@ -56,7 +60,7 @@ There are **two ways to use the stack:**
 |---|---|---|
 | `main.py` | PySide6 GUI — chat bubbles, settings sidebar, status bar | Active |
 | `backend.py` | Ollama + LiteLLM health check, streaming worker, model/proxy management | Active |
-| `styles.py` | Pip-Boy amber/green theme — COLORS dict, QSS stylesheet, status pills | Active |
+| `styles.py` | Theme — COLORS dict, `rgba()` tint helper, QSS stylesheet, status pills | Active |
 | `widgets.py` | Custom QPainter widgets: CrackedBackdrop, ScanlineOverlay, LEDDot, Knob, BarMeter, MascotGlyph, HardwareStrip | Active, wired into main.py |
 | `configs.py` | ModelConfig dataclass + Modelfile / config.yaml read-write (single source of truth) | Active |
 | `settings.py` | Persistent connection endpoints (`.state/settings.json`) | Active |
@@ -64,14 +68,18 @@ There are **two ways to use the stack:**
 | `hardware.py` | CPU/RAM/GPU detection (pynvml) + recommendation engine | Active |
 | `config.py` | Terminal TUI for hardware tuning (uses configs.py + hardware.py; supports --auto, --show) | Active |
 | `setup.py` | Automation: GGUF → Ollama build → LiteLLM launch → Claude CLI (supports CLI flags) | Active |
-| `history.py` | Chat history persistence — JSON sessions + auto-save in `~/.qwythos/history/` | Active |
+| `history.py` | Chat history persistence — JSON sessions + auto-save in `~/.qwythos/history/` (legacy path, retained) | Active |
+| `memory_vault.py` | Persistent markdown memory — read/write `*.md` under `.state/memory/`, compose the injection block | Active |
+| `mcp_grants.py` | Per-directory `read`/`write`/`shell` grants for the MCP server — pure data layer, no MCP SDK import | Active |
+| `mcp_server.py` | FastMCP workspace server — file and command tools inside granted directories; also `--grant`/`--revoke`/`--list`/`--register` CLI | Active, manual registration |
+| `opencode_bridge.py` | Merges one `cayde` provider block into `~/.config/opencode/opencode.json` so OpenCode can reach LiteLLM; then launches it | Active |
 | `Modelfile` | Ollama model definition — points to GGUF, sets hardware params | Generated, gitignored |
 | `config.yaml` | LiteLLM proxy config — model routing, Ollama endpoint, context | Generated, gitignored |
 | `Models/` | GGUF weights (`_originals/` holds unpatched copies). Auto-excluded from git | Directory, user-populated |
 | `Modelfiles/` | Generated per-model Modelfiles (absolute paths, gitignored) | Directory, generated |
-| `.state/` | Per-PC local state: settings.json, external_paths.json, models.json | Directory, gitignored |
+| `.state/` | Per-PC local state: settings.json, external_paths.json, models.json, memory/, mcp_grants.json | Directory, gitignored |
 | `tools/gguf_guards.py` | Inspect/neutralise chat-template guards; validates GGUF integrity | Active |
-| `requirements.txt` | Python deps: litellm, PySide6, requests, psutil, pynvml, ollama | Complete |
+| `requirements.txt` | Python deps: litellm, PySide6, requests, psutil, pynvml, ollama, mcp | Complete |
 | `check_and_install_deps.bat` | Scans for Python/Ollama/npm, opens download pages, installs requirements.txt | Active |
 | `launch.bat` | Double-click launcher: python main.py with error pause | Active |
 | `setup.bat` | Double-click launcher: python setup.py with argument forwarding | Active |
@@ -85,6 +93,21 @@ These files are machine-local: `Modelfile`/`config.yaml` contain absolute paths
 that Ollama/LiteLLM require on this machine, and `.state/` holds endpoints and
 per-model tuning. A fresh clone regenerates all of them from the `Models/` it has
 on disk, so no machine-specific data is ever committed.
+
+### Naming: three things are deliberately not the same
+
+The app is **Cayde 420**. Two other names survive in the codebase on purpose —
+do not "tidy" them:
+
+| Name | Where | Why it stays |
+|---|---|---|
+| `~/.qwythos/history/` | `history.py:16` | Renaming orphans the user's existing saved conversations. There is no migration shim; adding one is a separate decision. |
+| `qwythos-heretic` and friends | Ollama tags, derived from GGUF filenames via `derive_model_tag` | These are **model** names, not app names. The weights are a Qwythos-9B Mythos fine-tune. Renaming a tag means `ollama create` per model plus a `config.yaml` regen. |
+| `Qwythos-9B-...gguf` | `setup.py` HF download URL, `Models/` | The upstream filename on HuggingFace. Must match byte-for-byte to download. |
+
+The GUI may label the assistant "Cayde" in user-facing strings (role label,
+window title, export header) while the tag underneath stays `qwythos-heretic` —
+those are separate concerns and conflating them is how the tag ends up wrong.
 
 ### Who owns which setting
 
@@ -203,12 +226,16 @@ dropdown.
 
 ## Design System
 
-### Visual Theme: Pip-Boy
-Amber readout on weathered dark green. Like a Fallout wrist computer.
+### Visual Theme: Cayde 420
+Bone plating over gunmetal, lit by a visor-orange glow.
 
 - **Monospace everywhere** — font stack: Cascadia Mono → JetBrains Mono → Consolas → DejaVu Sans Mono
-- **Amber is text, green is background** — never reversed
+- **Bone is text, gunmetal is background** — never reversed
+- **Orange is rationed** — `ember` is for brand, focus, primary action, and glow only. If everything is orange, nothing is.
+- **Green is status-only** — `led_green` appears on lamps and the "live" pill, nowhere else. `BarMeter` ramps bone → orange so load never reads as an error.
 - `COLORS` dict in `styles.py` is the single source of truth for all palette values
+- Derive translucent tints with `styles.rgba(key, alpha)` rather than hand-writing `rgba()` literals — literals drift out of sync when the palette changes
+- **App name comes from `styles.APP_NAME` / `ASSISTANT_NAME` / `TITLE`, not literals.** Never type "Cayde 420" into a UI string, and never reach for the model tag there instead. Heading labels use `letter-spacing` (3–4px) to get the tracked-out Destiny feel rather than ALL CAPS, so the casing stays uniform across every surface.
 - QSS stylesheets live entirely in `styles.py` — no inline QSS strings in `main.py` except one-off bubble overrides
 - Custom painted widgets (texture, glow, LEDs, knobs) live in `widgets.py` — QSS cannot express these
 
@@ -225,15 +252,17 @@ Amber readout on weathered dark green. Like a Fallout wrist computer.
 ```
 main.py
   ├── backend.py      (OllamaBackend, ChatWorker, ModelManager, LiteLLMStarter, StatusWorker)
-  ├── styles.py       (get_main_stylesheet, COLORS)
+  ├── styles.py       (get_main_stylesheet, rgba, COLORS)
   ├── widgets.py      (all custom painted widgets)
   ├── configs.py      (ModelConfig, load_full, write_all, derive_model_tag)
   ├── settings.py     (load, save)
   ├── history.py      (auto_save, save_session, load_session, list_sessions, load_auto_save)
+  ├── memory_vault.py (read/write/build_block/compose_system_prompt/strip_vault)
   └── hardware.py     (detect → HardwareReport + Recommendations)
 
 backend.py
   ├── configs.py      (derive_model_tag)
+  ├── memory_vault.py (compose_system_prompt, strip_vault)
   └── settings.py
 
 configs.py
@@ -247,14 +276,27 @@ config.py
 setup.py
   ├── configs.py
   ├── hardware.py
+  ├── memory_vault.py (build_block, write_block_file — for the CLI flag)
   └── settings.py
+
+mcp_server.py
+  └── mcp_grants.py   (has_capability / describe / default_root)
+
+mcp_grants.py
+  └── settings.py     (SETTINGS_DIR only — resolves .state/mcp_grants.json)
+
+opencode_bridge.py
+  └── configs.py      (load_full — tag, URLs, context/max_tokens)
 
 widgets.py
   └── styles.py       (COLORS only)
 ```
 
 `backend.py` and `widgets.py` do NOT import each other. Keep it that way.
-`settings.py` and `history.py` have zero GUI imports — pure data layer.
+`settings.py`, `history.py`, and `mcp_grants.py` have zero GUI imports — pure
+data layers. `mcp_server.py` imports the MCP SDK lazily inside `build_server()`,
+so `--grant`/`--list` work without it. `main.py` imports `opencode_bridge`
+inside the OpenCode button handler, not at module scope.
 
 ---
 
@@ -272,7 +314,7 @@ write_all(cfg2, Path(working_dir))          # writes both files
 Never hand-roll Modelfile/config.yaml strings in the GUI. That was the V0.1 bug we fixed in V0.2.
 
 ### Backend URL access (live-mutable)
-`backend.py` uses instance-level `ollama_base_url`, `litellm_base_url`, `litellm_api_key` on `OllamaBackend`, with an `update_urls()` method for hot-swapping. Persisted via `settings.py` to `~/.qwythos/settings.json`.
+`backend.py` uses instance-level `ollama_base_url`, `litellm_base_url`, `litellm_api_key` on `OllamaBackend`, with an `update_urls()` method for hot-swapping. Persisted via `settings.py` to `.state/settings.json`.
 
 ### Streaming signals (ChatWorker)
 ```
@@ -319,7 +361,7 @@ backend.check_status() (every 5s)
 
 ### V0.3 — Wiring + Persistence
 
-- ✅ **Live URL wiring** — `backend.py` URL constants became instance vars; `update_urls()` method; `_apply_settings()` pushes URLs into backend immediately without restart and persists to `~/.qwythos/settings.json`
+- ✅ **Live URL wiring** — `backend.py` URL constants became instance vars; `update_urls()` method; `_apply_settings()` pushes URLs into backend immediately without restart and persists to `.state/settings.json`
 - ✅ **Direct Ollama mode** — `ChatWorker` supports native Ollama `/api/chat` streaming when `engine_mode == "direct"`, bypassing LiteLLM entirely; status banner and hardware strip adapt to direct mode
 - ✅ **System prompt editor** — `QTextEdit` in Settings sidebar Model & Persona group; `_apply_settings()` calls `backend.set_system_prompt()`
 - ✅ **Live Ollama model switcher** — editable `QComboBox` in Settings sidebar populated from `model_list_updated` signal; switching calls `backend.set_model_tag()`
@@ -353,11 +395,118 @@ backend.check_status() (every 5s)
 - ✅ **Service control buttons** — Settings panel has Start/Kill buttons for LiteLLM and Ollama with status polling and health log viewers.
 - 🔲 **Defiant Fable onboarding** — source GGUF is corrupt (the `gguf` parser fails); re-download required before it can be built.
 
+### V0.6 — Agent capabilities (planned, ordered by cost/benefit)
+
+Build order is deliberate: cheapest-and-most-useful first, so each item lands
+on a working app rather than arriving with the last batch.
+
+**1. ✅ Memory vault (persistent markdown memory)**
+`memory_vault.py` — flat module, pure data layer, no GUI imports (mirrors
+`history.py`). Reads/writes `*.md` under `.state/memory/` and returns the
+concatenated block for injection.
+- Composition is additive via `compose_system_prompt(persona)`: an empty or
+  disabled vault returns the persona byte-for-byte, so a model keeps its own
+  baked-in SYSTEM block. `configs.MODELFILE_TEMPLATE` is untouched.
+- `strip_vault()` strips a previously-injected block before the persona
+  round-trips through the Settings text box, so repeated Apply cannot stack
+  copies until the cap truncates real memory.
+- Capped at `DEFAULT_MAX_CHARS` (10k). Entries are dropped whole, never sliced,
+  and the omission is stated in the block so the model knows its memory is
+  partial.
+- Reaches the CLI through `--append-system-prompt-file` against a generated
+  `.state/memory_block.md` — the block is too large for argv and would need a
+  layer of shell quoting through `start cmd /k`.
+- Editor in Settings → Memory Vault; enable checkbox, entry picker, live token
+  readout that turns amber over budget.
+
+**2. ✅ MCP workspace server (tools for the Claude CLI)**
+`mcp_server.py` — FastMCP server exposing workspace file/command tools, with the
+grant data split into `mcp_grants.py` so the GUI, the TUI, and the server can all
+read and edit grants without importing the MCP SDK. `claude` launches it via
+`python mcp_server.py --serve`.
+- **Denied by default.** `mcp_grants.py` ships an empty grant list and
+  `.state/mcp_grants.json` is per-PC, gitignored state, so a fresh clone can read
+  nothing at all until the user runs `--grant`. There is deliberately no
+  first-launch auto-grant: that silently widens what an LLM can reach the first
+  time the CLI is started.
+- **Explicit per-directory grants, stored resolved.** One absolute directory per
+  grant, no wildcard, no "parent implies child". `grant()` resolves before
+  writing, so a stored grant cannot later be re-pointed by moving the process
+  cwd. An entry with no valid capabilities is dropped rather than defaulted to a
+  full grant, and an unknown capability key in a hand-edited JSON is ignored.
+- **Read, write, and shell are separate capabilities.** A read-only grant cannot
+  be talked into a write, and shell is never implied by write. Note that
+  `--grant` *without* `--read-only` grants all three at once — `--read-only` is
+  the only way to get read and nothing else from the CLI.
+- **Resolve before compare.** `resolve_grant` fully resolves the target (`..`
+  and symlinks applied) *before* the containment test. Comparing the literal
+  string is the classic escape — `C:/proj/../secrets` looks like it starts with
+  `C:/proj` and is not inside it.
+- **Every spawn is bounded.** 30s hard timeout, 30k chars per output stream, no
+  shell interpolation, and a 2 MB ceiling on `read_file`. `edit_file` refuses
+  rather than guessing when the search text appears more than once.
+- ⚠️ **`shell` gates the working directory, not the command's reach.** It is a
+  `cwd` jail, not a syscall sandbox: a granted command can still read and write
+  anywhere the user can. There is **no command allowlist** — the guide's
+  `execute_powershell_cmd` was not shipped and `run_command` accepts any command
+  string. Grant `shell` only where that is acceptable, or edit `.state/mcp_grants.json`
+  down to `["read"]`.
+- **Denials never leak the filesystem.** An out-of-grant path gets the same
+  message whether or not it exists, and no raw exception class is surfaced.
+- **Manual registration only.** `--register` prints the `claude mcp add` line and
+  exits. Cayde 420 never runs it, because it mutates the user's Claude config and
+  persists for every future launch in this project.
+- `tests/test_mcp_jail.py` — 14 tests: no-grant denial, `..` traversal, symlink
+  escape, capability separation, revoke-immediately, disclosure-free denials, the
+  30s timeout, the output cap, and a hand-edited grants file failing to smuggle
+  in a capability.
+
+**3. 🔲 Vision / image input**
+Drag-and-drop or paste an image into the chat input → base64 → multi-modal
+message content array.
+- ⚠️ **Blocked on model acquisition.** All three models in `Models/` are text-only
+  Heretic fine-tunes; none can see. A vision-capable GGUF must be onboarded
+  first. Code is the easy half.
+- ⚠️ **Must route through LiteLLM, not `api_base=11434`.** LiteLLM is mandatory
+  precisely because it spoofs the Anthropic API for `claude`. A direct-to-Ollama
+  path means the CLI cannot see images even when the GUI can.
+- `config.yaml` serves one exact tag. A second vision model needs a routing
+  decision, and the "no wildcard" rule stands — a second model is an explicit
+  second `model_list` entry, never `"*"`.
+
+**4. 🔲 Voice (STT, then TTS)**
+`voice_engine.py` — record + transcribe in a `QThread`, mirroring the existing
+`ChatWorker`/`StatusWorker` pattern so the GUI thread never blocks.
+- `faster-whisper` on CPU, int8, `base` model. The model must be loaded **once**
+  and held by the worker; the guide reloads it per request, which adds seconds of
+  stall to every utterance.
+- Record-then-transcribe, not streaming, to start. STT first; TTS is a separate
+  item once STT is stable.
+- `sounddevice` + `scipy` are new deps and must be added to `requirements.txt`
+  and `pyproject.toml` together.
+
+**5. 🔲 Hand tracking / gesture control** — lowest priority, do last
+Webcam pinch-to-cursor, mapping to Qt widgets via a `QThread`.
+- ⚠️ **Dependency risk, verify in an isolated venv first.** Local Python is 3.13;
+  `mediapipe` resolves to 1.0.1, but the guide uses the legacy
+  `mp.solutions.hands` API and 1.0.x moved to the Tasks API (`HandLandmarker`).
+  Confirm the shipped version actually exposes `solutions` before writing a line.
+- Needs a pinch deadzone/deadband. Raw per-frame pinch state jitters and will
+  feel broken driving a real widget.
+- Heaviest deps of anything on this list for the least certain payoff, and it
+  needs a gesture vocabulary designed for the whole app before it is useful.
+
+**Deliberately not adopted:** the guides' `src/gui/`, `src/core/`, `src/mcp/`
+restructure. It contradicts the flat-module dependency graph above, and
+`pyproject.toml`'s `py-modules` list plus `config.py`/`setup.py` all assume flat.
+New modules stay flat. Revisit only if the app genuinely outgrows flat layout.
+
 ### Backlog
 
 - ✅ **Multi-GGUF management** — `GGUF File` dropdown in Settings → Model & Persona; switching rebuilds Modelfile/config.yaml and hot-swaps the model tag
 - ✅ **Drag-and-drop GGUF install** — drag .gguf files onto app window to copy to Models/, validate GGUF integrity, and show installation instructions
 - ✅ **Tool/plugin system for the model** — framework created in `plugins/` directory for extensible tools (web search, file read, code exec)
+- 🔲 **Multi-model comparison view** — same prompt, two models side-by-side
 
 ---
 
@@ -379,6 +528,13 @@ python setup.py
 
 # Terminal config TUI (hardware tuning without the GUI)
 python config.py
+
+# Point OpenCode at the same local stack, then start it
+python opencode_bridge.py --launch
+
+# Grant the claude CLI access to a directory, then register the MCP server
+python mcp_server.py --grant "C:\path\to\project"
+python mcp_server.py --register    # prints the `claude mcp add` line; run it yourself
 ```
 
 **Prerequisites:**
@@ -386,6 +542,7 @@ python config.py
 - Ollama installed and running (`ollama serve`) — https://ollama.com
 - One or more GGUF models in `Models/` (see "Model layout" above); the active model is `Qwen3.5-9B-Heretic-patched2.gguf` (≈5.8 GB), built as the Ollama tag `qwythos-heretic`
 - `litellm` available in PATH (satisfied by `pip install -r requirements.txt`)
+- *(Optional)* `claude` and/or `opencode` on PATH, for the CLI paths above
 
 ---
 
@@ -393,11 +550,14 @@ python config.py
 
 | Issue | Notes |
 |---|---|
-| Backend URLs are live-mutable | Fixed in V0.3 via `settings.py` and `OllamaBackend.update_urls()`. Endpoints are hot-swapped without restart and persisted to `~/.qwythos/settings.json`. |
+| Backend URLs are live-mutable | Fixed in V0.3 via `settings.py` and `OllamaBackend.update_urls()`. Endpoints are hot-swapped without restart and persisted to `.state/settings.json`. |
 | UI lockups during polling | Resolved in V0.3 by offloading synchronous `requests.get` health checks into a background `StatusWorker(QThread)`. The main GUI event loop is never blocked. |
 | CPU starvation during inference | Resolved in V0.3 by allocating 3 cores / 6 threads (`num_thread 6`) instead of 100% of CPU cores, leaving capacity for the OS and UI. |
 | LiteLLM crash mid-generation | Resolved: `ChatWorker.cancel()` closes the active response to unblock `iter_lines()`; exception handler checks `_cancelled` and emits normal completion instead of an error. |
 | `derive_model_tag` was duplicated | Fixed: single definition lives in `configs.py`; `backend.py` imports it from there. |
+| The MCP server can reach the whole disk | It cannot, and the denial is not a UI nicety — `mcp_grants.py` ships an empty grant list, `.state/mcp_grants.json` is per-PC and gitignored, and every path tool refuses until the user runs `python mcp_server.py --grant <dir>`. `read`/`write`/`shell` are separate capabilities and the containment test runs on the fully resolved path. One honest limit: `shell` bounds the command's **working directory** only, so grant it only where a command running with your own privileges is acceptable. |
+| `claude mcp add` would persist into every future launch | Hence manual registration. `python mcp_server.py --register` prints the exact command and exits; nothing in Cayde 420 runs it. Remove it again with `claude mcp remove cayde-workspace --scope local`. |
+| OpenCode's config is a file OpenCode owns | `opencode_bridge.py` merges only its own `cayde` provider block into `~/.config/opencode/opencode.json`, takes a backup to `opencode.cayde-bak` first, and refuses outright (leaving the file alone) if it cannot parse it. Re-running it with nothing changed is byte-identical. Never rewrite the whole file to add one entry. |
 
 ---
 
@@ -405,7 +565,7 @@ python config.py
 
 1. **Read this file first, then `main.py` top-to-bottom** — fastest orientation path.
 2. **Never write Modelfile or config.yaml by hand** — always use `configs.write_all(ModelConfig(...), path)`.
-3. **Never add inline QSS strings to `main.py`** — add color/style to `styles.py`, reference via `COLORS`.
+3. **Never add inline QSS strings to `main.py`** — add color/style to `styles.py`, reference via `COLORS` and `rgba()`.
 4. **Never import `main.py` from any other module** — it is the root entry point only.
 5. **Check the Roadmap section above** before proposing new features — the owner updates it.
 6. **Verify changes with:** `python -c "from main import *; from configs import *; from widgets import *; print('OK')"`

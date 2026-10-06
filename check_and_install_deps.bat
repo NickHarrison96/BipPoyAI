@@ -1,11 +1,11 @@
 @echo off
 setlocal EnableDelayedExpansion
-title BipPoyAI - Dependency Checker
+title Cayde 420 - Dependency Checker
 cd /d "%~dp0"
 
 echo.
 echo ================================================
-echo   BipPoyAI Dependency Checker
+echo   Cayde 420 Dependency Checker
 echo   Scans for the tools this app needs and
 echo   opens download pages for anything missing.
 echo ================================================

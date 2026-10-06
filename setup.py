@@ -24,6 +24,7 @@ if sys.version_info < (3, 11):
 
 import configs
 import hardware
+import memory_vault
 import netutil
 import settings
 
@@ -401,13 +402,23 @@ def stage_launch_stack(working_dir: Path, cfg: configs.ModelConfig, auto: bool =
     success(f"Launching Claude CLI with model: {cfg.model_tag}")
     # No --model flag: Claude Code validates model names against its own known
     # list and stalls on local Ollama tags. ANTHROPIC_MODEL (set above) selects
-    # the model and LiteLLM's "*" wildcard routes it.
-    subprocess.run(["claude"])
+    # the model and config.yaml routes that exact tag.
+    #
+    # The memory vault is appended as a file, not an inline string: the block can
+    # be ~10k characters, which would overflow the Windows command line and need
+    # a layer of shell quoting. An empty vault writes nothing and the flag is
+    # omitted entirely.
+    claude_cmd = ["claude"]
+    block_file = memory_vault.write_block_file(memory_vault.build_block())
+    if block_file:
+        claude_cmd += ["--append-system-prompt-file", str(block_file)]
+        success(f"Memory vault attached ({len(block_file.read_text(encoding='utf-8'))} chars)")
+    subprocess.run(claude_cmd)
 
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description="Qwythos AI — Setup & Launch Automation",
+        description="Cayde 420 — Setup & Launch Automation",
         formatter_class=argparse.RawTextHelpFormatter,
     )
     parser.add_argument(

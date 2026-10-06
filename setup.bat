@@ -1,5 +1,5 @@
 @echo off
-title Qwythos AI - Setup
+title Cayde 420 - Setup
 cd /d "%~dp0"
 
 where python >nul 2>nul

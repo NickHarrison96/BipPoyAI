@@ -37,6 +37,9 @@ def pid_on_port(port: int) -> Optional[int]:
             encoding="utf-8",
             errors="replace",
             timeout=10,
+            # Called from the GUI's spawn path; a windowed exe has no console
+            # for netstat to inherit, so each probe would flash a terminal.
+            creationflags=subprocess.CREATE_NO_WINDOW,
         ).stdout
     except Exception:
         return None
