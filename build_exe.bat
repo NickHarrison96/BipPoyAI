@@ -6,10 +6,10 @@ REM Install dependencies if needed
 python -m pip install -r requirements.txt --quiet
 
 REM Build from the spec — single source of truth for the flags.
-REM The spec used to carry --icon=build\QwythosAI.ico, which pointed into a
-REM gitignored build/ dir that does not exist on a fresh clone. PyInstaller
-REM fails on a missing icon path, so the icon entry was dropped.
-pyinstaller --noconfirm Cayde420.spec
+REM The spec used to carry an icon reference that pointed into a gitignored
+REM build/ directory (no longer present). PyInstaller would have failed on
+REM a missing icon path, so the icon was dropped from the spec.
+pyinstaller --noconfirm --clean Cayde420.spec
 
 echo.
 echo Build complete!

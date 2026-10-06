@@ -72,6 +72,7 @@ There are **three ways to use the stack:**
 | `memory_vault.py` | Persistent markdown memory — read/write `*.md` under `.state/memory/`, compose the injection block | Active |
 | `mcp_grants.py` | Per-directory `read`/`write`/`shell` grants for the MCP server — pure data layer, no MCP SDK import | Active |
 | `mcp_server.py` | FastMCP workspace server — file and command tools inside granted directories; also `--grant`/`--revoke`/`--list`/`--register` CLI | Active, manual registration |
+| `model_registry.py` | Machine-local bookkeeping: external weight paths + per-model tuning (`.state/`) | Active |
 | `opencode_bridge.py` | Merges one `cayde` provider block into `~/.config/opencode/opencode.json` so OpenCode can reach LiteLLM; then launches it | Active |
 | `Modelfile` | Ollama model definition — points to GGUF, sets hardware params | Generated, gitignored |
 | `config.yaml` | LiteLLM proxy config — model routing, Ollama endpoint, context | Generated, gitignored |

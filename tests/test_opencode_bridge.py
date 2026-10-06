@@ -174,6 +174,12 @@ def test_with_api_version_empty_input_does_not_crash(work, path):
     check(ob.with_api_version("///") == "", "a slash-only URL collapses to empty")
 
 
+def test_with_api_version_appends_for_ports(work, path):
+    print("bare host:port URLs get /v1 appended")
+    check(ob.with_api_version("http://h:4000/") == "http://h:4000/v1")
+    check(ob.with_api_version("http://h:4000") == "http://h:4000/v1")
+
+
 def test_provider_block_shape(work, path):
     print("provider block is the shape OpenCode expects")
     block = ob.provider_block("some-tag", "http://127.0.0.1:4000",

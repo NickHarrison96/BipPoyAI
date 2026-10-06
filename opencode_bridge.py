@@ -53,7 +53,9 @@ def with_api_version(url: str) -> str:
     connection error. This is the same shape OpenCode's own built-in Anthropic
     providers use (`https://opencode.ai/inference/anthropic/v1`).
     """
-    cleaned = (url or "").rstrip("/")
+    cleaned = (url or "").rstrip()
+    if cleaned.endswith("/"):
+        cleaned = cleaned.rstrip("/")
     if not cleaned:
         return cleaned
     return cleaned if cleaned.endswith("/v1") else f"{cleaned}/v1"
