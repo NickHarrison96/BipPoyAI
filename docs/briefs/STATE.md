@@ -142,4 +142,5 @@ exactly the failure mode that slipped through.
    `build\QwythosAI.ico`, left behind by the rename.
 3. **End-to-end verify the OpenCode path** once Ollama is up.
 4. **Grant the MCP server a directory** and try it from a real `claude` session.
-5. V0.6 items 3 (vision), 4 (voice), 5 (hand tracking) — 3 is blocked.
+5. V0.6 items 3 (vision), 4 (voice), 5 (hand tracking) — 3 is blocked.GPU config noted: RX 580 8GB in PCIe x4 slot, RTX 2070 SUPER remains in x16 slot 1. llamaGPU support files at C:\Users\nick\Desktop\llamaGPU (vulkan + nvidia folders). No code changes requested, notes only.
+Global llama.cpp installed; separate Vulkan (RX 580) and NVIDIA (RTX 2070 SUPER) support files placed at C:\Users\nick\Desktop\llamaGPU. Plan: split GPU workload across devices. Notes only for now.
