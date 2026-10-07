@@ -17,10 +17,18 @@ dependencies = [
     "mcp==1.29.0",
 ]
 
+[project.optional-dependencies]
+voice = [
+    "sounddevice==0.5.6",
+    "faster-whisper==1.2.1",
+    "silero-vad==6.2.3",
+    "transformers<5.0.0",
+]
+
 [project.scripts]
 cayde420 = "main:main"
 cayde420-setup = "setup:main"
 cayde420-config = "config:main"
 
 [tool.setuptools]
-py-modules = ["main", "backend", "configs", "settings", "hardware", "config", "history", "memory_vault", "mcp_grants", "mcp_server", "model_registry", "opencode_bridge", "netutil", "styles", "widgets"]
+py-modules = ["main", "backend", "configs", "settings", "hardware", "config", "history", "memory_vault", "mcp_grants", "mcp_server", "model_registry", "opencode_bridge", "netutil", "styles", "widgets", "voice_engine"]

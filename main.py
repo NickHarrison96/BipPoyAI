@@ -14,6 +14,7 @@ import os
 import re
 import shutil
 import subprocess
+from collections import deque
 from pathlib import Path
 
 if sys.version_info < (3, 11):
@@ -30,7 +31,7 @@ from PySide6.QtWidgets import (
 QMessageBox, QFileDialog, QCheckBox, QSystemTrayIcon, QMenu,
       QSizePolicy,
   )
-from PySide6.QtCore import Qt, QTimer, QSize, Signal
+from PySide6.QtCore import Qt, QTimer, QSize, Signal, Slot
 from PySide6.QtGui import QKeyEvent, QShortcut, QKeySequence, QIcon, QPixmap, QPainter, QColor, QPen, QAction, QDropEvent, QDragEnterEvent, QPainterPath
 
 from styles import get_main_stylesheet, rgba, COLORS, APP_NAME, ASSISTANT_NAME, TITLE
@@ -39,11 +40,12 @@ from widgets import (
     CrackedBackdrop, ScanlineOverlay, LEDDot, HardwareStrip,
     BarMeter, MascotGlyph,
 )
-from configs import ModelConfig, load_full, write_all
+from configs import ModelConfig, load_full, write_all, resolve_role_aliases, load_role_aliases
 from hardware import detect as detect_hardware
 import history
 import memory_vault
 import model_registry
+from voice_engine import SpeechListener
 
 
 # ─── Resolve working directory (always relative to this script) ───────────────
@@ -441,6 +443,25 @@ class SettingsPanel(QFrame):
 
         layout.addWidget(conn_group)
 
+        roles_group = QGroupBox("Model Roles")
+        roles_layout = QFormLayout(roles_group)
+        self.role_combos = {}
+        for role in model_registry.ROLE_NAMES:
+            combo = QComboBox()
+            combo.addItem("Not assigned", "")
+            combo.setToolTip("Choose an exact installed Ollama tag; only assigned roles are routed")
+            self.role_combos[role] = combo
+            roles_layout.addRow(f"{role.title()}:", combo)
+        self.role_issues = QLabel("")
+        self.role_issues.setWordWrap(True)
+        self.role_issues.setObjectName("hintLabel")
+        roles_layout.addRow("", self.role_issues)
+        save_roles = QPushButton("Save Model Routes")
+        save_roles.setObjectName("secondaryButton")
+        save_roles.clicked.connect(self._save_model_roles)
+        roles_layout.addRow("", save_roles)
+        layout.addWidget(roles_group)
+
         # ── Services Control ──
         svc_group = QGroupBox("Services")
         svc_layout = QVBoxLayout(svc_group)
@@ -589,6 +610,7 @@ class SettingsPanel(QFrame):
         # Tags Ollama currently has, so the coherence check can tell a
         # deliberate rename from drift onto a model that does not exist.
         self._registered_tags: set = set()
+        self._role_choices_loaded = False
 
         layout.addStretch()
 
@@ -600,6 +622,7 @@ class SettingsPanel(QFrame):
 
         # Load saved settings from disk
         self._load_from_configs()
+        self._refresh_role_combos()
 
         # Start watching for edits only once the widgets hold their loaded
         # values, otherwise every field reads as a pending change on startup.
@@ -864,12 +887,15 @@ class SettingsPanel(QFrame):
         )
         self.info_label.setText(f"Model: {cfg.model_tag}")
         self._reset_dirty()
+        self._sync_saved_role_routes()
 
         self._offer_install(cfg.model_tag)
 
     def _offer_install(self, tag: str):
         """Prompt to build the model into Ollama if its tag is not installed."""
-        if tag in set(self.backend.installed_models()):
+        if model_registry.normalize_tag(tag) in {
+            model_registry.normalize_tag(name) for name in self.backend.installed_models()
+        }:
             return
         reply = QMessageBox.question(
             self,
@@ -891,11 +917,81 @@ class SettingsPanel(QFrame):
         self.model_combo.blockSignals(True)
         self.model_combo.clear()
         for m in models:
-            self.model_combo.addItem(m)
+            self.model_combo.addItem(m.removesuffix(":latest"))
         if current and self.model_combo.findText(current) < 0:
             self.model_combo.addItem(current)
         self.model_combo.setCurrentText(current or self.backend.get_model_tag())
         self.model_combo.blockSignals(False)
+        self._refresh_role_combos()
+        self._sync_saved_role_routes()
+
+    def _refresh_role_combos(self):
+        saved = model_registry.role_tags()
+        for role, combo in self.role_combos.items():
+            current = combo.currentData() if self._role_choices_loaded else saved.get(role, "")
+            combo.blockSignals(True)
+            combo.clear()
+            combo.addItem("Not assigned", "")
+            for tag in sorted(self._registered_tags, key=str.casefold):
+                combo.addItem(tag, tag)
+            if current and combo.findData(current) < 0:
+                combo.addItem(f"{current} (not installed)", current)
+            combo.setCurrentIndex(max(0, combo.findData(current)))
+            combo.blockSignals(False)
+        self._role_choices_loaded = True
+        cfg = load_full(Path(self.backend.working_dir))
+        _, issues = resolve_role_aliases(cfg, saved, self._registered_tags)
+        self.role_issues.setText("\n".join(issues))
+
+    def _sync_saved_role_routes(self):
+        working_dir = Path(self.backend.working_dir)
+        config_path = working_dir / "config.yaml"
+        if not config_path.exists():
+            return
+        cfg = load_full(working_dir)
+        aliases, issues = resolve_role_aliases(cfg, registered_tags=self._registered_tags)
+        if aliases != load_role_aliases(config_path):
+            try:
+                write_all(cfg, working_dir, self._registered_tags)
+            except (OSError, ValueError) as exc:
+                issues.append(str(exc))
+            else:
+                if self.backend.litellm_base_url:
+                    issues.append("Model routes changed; restart LiteLLM to load the updated config.")
+        self.role_issues.setText("\n".join(issues))
+
+    def _save_model_roles(self):
+        installed = {model_registry.normalize_tag(tag) for tag in self._registered_tags}
+        mapping = {role: combo.currentData() for role, combo in self.role_combos.items()
+                   if combo.currentData()}
+        if not installed:
+            QMessageBox.warning(self, "Model Routes", "Start Ollama before assigning model roles.")
+            return
+        missing = [tag for tag in mapping.values() if model_registry.normalize_tag(tag) not in installed]
+        if missing:
+            QMessageBox.warning(self, "Model Routes", f"Model not installed in Ollama: {missing[0]}")
+            return
+        primary = mapping.get("default") or mapping.get("reasoning")
+        if primary and not mapping.get("default"):
+            mapping["default"] = primary
+        if primary and not mapping.get("reasoning"):
+            mapping["reasoning"] = primary
+        cfg = load_full(Path(self.backend.working_dir))
+        _, issues = resolve_role_aliases(cfg, mapping, self._registered_tags)
+        if issues:
+            QMessageBox.warning(self, "Model Routes", "\n".join(issues))
+            return
+        previous = model_registry.role_tags()
+        try:
+            model_registry.save_role_tags(mapping)
+            write_all(cfg, Path(self.backend.working_dir), self._registered_tags, mapping)
+        except (OSError, ValueError) as exc:
+            model_registry.save_role_tags(previous)
+            QMessageBox.warning(self, "Model Routes", str(exc))
+            return
+        self._role_choices_loaded = False
+        self._refresh_role_combos()
+        self.role_issues.setText("Routes saved. Restart LiteLLM to apply changes.")
 
     def _on_model_changed(self, tag: str):
         """Handle model tag selection change."""
@@ -1280,13 +1376,25 @@ class SettingsPanel(QFrame):
                 return
 
             try:
-                # Start Ollama in a new console window
+                ollama_env = os.environ.copy()
+                ollama_env.update({
+                    "OLLAMA_MAX_LOADED_MODELS": "1",
+                    "OLLAMA_KEEP_ALIVE": "5m",
+                    "OLLAMA_NUM_PARALLEL": "1",
+                    # CUDA_VISIBLE_DEVICES=0 forces Ollama to use only NVIDIA GPU
+                    # (RTX 2070 SUPER at index 0). Without this, Ollama may use
+                    # AMD RX 580 which has insufficient VRAM for our models.
+                    "CUDA_VISIBLE_DEVICES": "0",
+                    "PYTHONIOENCODING": "utf-8",
+                    "PYTHONUTF8": "1",
+                })
                 silent = self.silent_launch_check.isChecked()
                 if silent:
                     startupinfo = subprocess.STARTUPINFO()
                     startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
                     subprocess.Popen(
                         [ollama_path, "serve"],
+                        env=ollama_env,
                         startupinfo=startupinfo,
                         creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
                         stdout=subprocess.DEVNULL,
@@ -1295,6 +1403,7 @@ class SettingsPanel(QFrame):
                 else:
                     subprocess.Popen(
                         ["cmd", "/c", "start", "cmd", "/k", "ollama serve"],
+                        env=ollama_env,
                         creationflags=subprocess.CREATE_NEW_CONSOLE,
                     )
 
@@ -1445,6 +1554,8 @@ class MainWindow(QMainWindow):
         # Streaming state
         self._streaming_bubble: MessageBubble | None = None
         self._streaming_text = ""
+        self._voice_worker = None
+        self._pending_voice = deque(maxlen=8)
 
         # Auto-scroll: follow output only while the user is at the bottom
         self._auto_scroll = True
@@ -1624,6 +1735,7 @@ class MainWindow(QMainWindow):
 
     def _quit_app(self):
         """Terminate managed child processes, then exit (spec Step 5)."""
+        self._stop_voice(wait=True)
         try:
             self.backend.shutdown()
         except Exception:
@@ -1632,6 +1744,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         """Minimize to tray instead of closing (unless tray is unavailable)."""
+        self._stop_voice(wait=not (self._tray and self._tray.isVisible()))
         if self._tray and self._tray.isVisible():
             event.ignore()
             self.hide()
@@ -1908,6 +2021,14 @@ class MainWindow(QMainWindow):
         self.stop_btn.setEnabled(False)  # always visible, disabled when idle
         btn_layout.addWidget(self.stop_btn)
 
+        self.voice_btn = QPushButton("Mic On")
+        self.voice_btn.setObjectName("secondaryButton")
+        self.voice_btn.setFixedSize(100, 36)
+        self.voice_btn.setToolTip("Transcribe speech locally and send through LiteLLM")
+        self.voice_btn.clicked.connect(self._toggle_voice)
+        btn_layout.addWidget(self.voice_btn)
+        self.chat_input.textChanged.connect(lambda: QTimer.singleShot(0, self._drain_voice_queue))
+
         layout.addWidget(btn_container)
 
         return container
@@ -2023,12 +2144,14 @@ class MainWindow(QMainWindow):
         self.ollama_led.set_state("green" if status == "live" else "red")
         self._sync_hw_strip()
         self._update_banner()
+        self._drain_voice_queue()
 
     def _on_litellm_status(self, status: str):
         self._litellm_live = (status == "live")
         self.litellm_led.set_state("green" if status == "live" else "amber")
         self._sync_hw_strip()
         self._update_banner()
+        self._drain_voice_queue()
 
     def _on_model_status(self, status: str):
         self._model_ready = (status == "ready")
@@ -2040,6 +2163,7 @@ class MainWindow(QMainWindow):
             self.model_led.set_state("amber")
         self._sync_hw_strip()
         self._update_banner()
+        self._drain_voice_queue()
 
     def _sync_hw_strip(self):
         """Drive the decorative PWR / I/O / GPU LEDs on the hardware strip."""
@@ -2273,20 +2397,90 @@ class MainWindow(QMainWindow):
         self.banner_action_btn.setText("Retry")
         QMessageBox.critical(self, "LiteLLM Start Failed", error)
 
-    def _send_message(self):
-        """Send the current input as a user message."""
-        text = self.chat_input.toPlainText().strip()
-        if not text:
+    def _toggle_voice(self):
+        if self._voice_worker and self._voice_worker.isRunning():
+            self._stop_voice()
             return
+        self._voice_worker = SpeechListener(self)
+        self._voice_worker.transcribed.connect(self._on_speech_transcribed, Qt.QueuedConnection)
+        self._voice_worker.status_changed.connect(self._on_voice_status, Qt.QueuedConnection)
+        self._voice_worker.error_occurred.connect(self._on_voice_error, Qt.QueuedConnection)
+        self._voice_worker.finished.connect(self._on_voice_finished)
+        self.voice_btn.setText("Mic Off")
+        self.voice_btn.setToolTip("Stop listening")
+        self._voice_worker.start()
 
-        if self.backend.is_generating():
+    def _stop_voice(self, wait: bool = False):
+        self._pending_voice.clear()
+        worker = self._voice_worker
+        if worker and worker.isRunning():
+            worker.stop()
+            if wait:
+                worker.wait()
+        self.voice_btn.setText("Mic On")
+        self.voice_btn.setToolTip("Transcribe speech locally and send through LiteLLM")
+
+    @Slot(str)
+    def _on_voice_status(self, status: str):
+        self.voice_btn.setToolTip(status)
+
+    @Slot(str)
+    def _on_voice_error(self, error: str):
+        self._stop_voice()
+        QMessageBox.warning(self, "Microphone", error)
+
+    def _on_voice_finished(self):
+        if self.sender() is not self._voice_worker:
             return
+        self.voice_btn.setText("Mic On")
+        self.voice_btn.setToolTip("Transcribe speech locally and send through LiteLLM")
+
+    @Slot(str)
+    def _on_speech_transcribed(self, text: str):
+        text = text.strip()
+        if not text or not self._voice_worker or not self._voice_worker.isRunning():
+            return
+        if len(self._pending_voice) == self._pending_voice.maxlen:
+            self.voice_btn.setToolTip("Voice queue full; oldest phrase discarded")
+        self._pending_voice.append(text)
+        self._drain_voice_queue()
+
+    def _drain_voice_queue(self):
+        if not self._pending_voice or self.chat_input.toPlainText().strip():
+            return
+        if self._streaming_bubble is not None:
+            return
+        if self.backend.is_generating():
+            QTimer.singleShot(100, self._drain_voice_queue)
+            return
+        if not (self._litellm_live and self._ollama_live and self._model_ready):
+            self.voice_btn.setToolTip("Speech queued until LiteLLM and the model are ready")
+            return
+        original_text = self._pending_voice.popleft()
+        text = original_text
+        requested = re.match(r"^(default|reasoning|coding|vision|multimodal)\s*[:,-]\s*(.+)$",
+                             text, re.IGNORECASE | re.DOTALL)
+        role = requested.group(1).lower() if requested else None
+        if role:
+            if role not in load_role_aliases(Path(self.backend.working_dir) / "config.yaml"):
+                self.voice_btn.setToolTip(f"{role.title()} route is not registered in LiteLLM")
+                return
+            text = requested.group(2).strip()
+        if not self._send_text(text, engine_mode="litellm_chat", model_tag=role):
+            self._pending_voice.appendleft(original_text)
+
+    def _send_message(self):
+        text = self.chat_input.toPlainText().strip()
+        if self._send_text(text):
+            self.chat_input.clear()
+
+    def _send_text(self, text: str, engine_mode: str = None,
+                   model_tag: str = None) -> bool:
+        if not text or self.backend.is_generating():
+            return False
 
         # Remove welcome card
         self._remove_welcome()
-
-        # Clear input
-        self.chat_input.clear()
 
         # Add user bubble
         user_bubble = MessageBubble("user", text)
@@ -2309,12 +2503,13 @@ class MainWindow(QMainWindow):
         self.chat_input.setEnabled(False)
 
         # Start generation
-        worker = self.backend.send_message(text)
+        worker = self.backend.send_message(text, engine_mode=engine_mode, model_tag=model_tag)
         worker.token_received.connect(self._on_token)
         worker.generation_complete.connect(self._on_generation_complete)
         worker.error_occurred.connect(self._on_generation_error)
         worker.stats_update.connect(self._on_stats_update)
         worker.start()
+        return True
 
     def _on_token(self, token: str):
         """Handle a single streaming token."""
@@ -2344,6 +2539,7 @@ class MainWindow(QMainWindow):
         self.chat_input.setFocus()
 
         self._scroll_to_bottom()
+        QTimer.singleShot(100, self._drain_voice_queue)
 
     def _on_generation_error(self, error: str):
         """Handle generation error."""
@@ -2365,6 +2561,7 @@ class MainWindow(QMainWindow):
         self.stop_btn.setEnabled(False)
         self.chat_input.setEnabled(True)
         self.chat_input.setFocus()
+        QTimer.singleShot(100, self._drain_voice_queue)
 
     def _on_stats_update(self, stats: dict):
         """Update the generation speed indicator."""
@@ -2379,6 +2576,7 @@ class MainWindow(QMainWindow):
 
     def _clear_chat(self):
         """Clear all messages and reset conversation."""
+        self._pending_voice.clear()
         # Remove all message bubbles
         while self.messages_layout.count():
             item = self.messages_layout.takeAt(0)
@@ -2500,6 +2698,7 @@ class MainWindow(QMainWindow):
 
     def _restore_conversation(self, messages: list):
         """Replace the current chat with messages loaded from history."""
+        self._pending_voice.clear()
         while self.messages_layout.count():
             item = self.messages_layout.takeAt(0)
             widget = item.widget()

@@ -34,6 +34,8 @@ User (Claude CLI, OpenCode, or GUI chat)
 - **Automated Hardware Profiling**: Real-time detection of CPU threads, RAM, and GPU VRAM with tailored context and offloading recommendations.
 - **Flexible Tuning**: Tune context size, GPU layer offloading, thread count, batch size, and temperature via the GUI settings panel or terminal TUI.
 - **Multi-model management**: Drop multiple GGUFs into `Models/`, pick any one at runtime, and `setup.py` builds it into Ollama automatically.
+- **Dual-GPU support**: On systems with both NVIDIA and AMD GPUs, the Modelfile's `num_gpu 1` ensures the model loads on the NVIDIA GPU only (prevents VRAM issues on AMD RX 580).
+- **Voice pipeline (STT)**: Optional microphone capture with Silero VAD + Whisper CPU transcription for hands-free interaction. Prefix prompts with `coding:`, `vision:`, or `default:` to route to specialized models.
 - **Chat-template guard tooling**: `tools/gguf_guards.py` inspects and patches the `raise_exception` guards that make some models crash on tool-result turns, and validates GGUF integrity.
 
 ---

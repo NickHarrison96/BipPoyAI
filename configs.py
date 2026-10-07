@@ -30,7 +30,7 @@ class ModelConfig:
     engine_mode: str = "litellm_chat"
 
     context_size: int = 32768
-    gpu_layers: int = 99
+    gpu_layers: int = 1
     cpu_threads: int = 6
     batch_size: int = 512
     temperature: float = 0.2
@@ -152,9 +152,9 @@ def coherence_issues(cfg: "ModelConfig", registered_tags=None, working_dir=None)
     # A tag that differs from the weights is only suspicious when it names
     # something Ollama does not have. A registered tag is a deliberate rename
     # and is left alone.
-    known = set(registered_tags or ())
+    known = {model_registry.normalize_tag(tag) for tag in (registered_tags or ())}
     if implied != cfg.model_tag and not cfg.tag_is_custom:
-        if not known or cfg.model_tag not in known:
+        if not known or model_registry.normalize_tag(cfg.model_tag) not in known:
             issues.append(
                 f"Model tag '{cfg.model_tag}' does not match the selected weights.\n"
                 f"    Modelfile : {gguf_path.name}\n"
@@ -244,26 +244,78 @@ def load_config_yaml(path: Path) -> dict:
     except Exception:
         return out
 
-    tag_match = re.search(r'model_name:\s*([^\s]+)', content)
-    if tag_match and tag_match.group(1) != '"*"' and tag_match.group(1) != "*":
-        out["model_tag"] = tag_match.group(1)
+    entries = _config_entries(content)
+    active = _active_entry(entries)
+    block = active[1] if active else content
+    if active:
+        out["model_tag"] = active[0]
 
-    url_match = re.search(r'api_base:\s*([^\s]+)', content)
+    url_match = re.search(r'api_base:\s*([^\s]+)', block)
     if url_match:
         out["ollama_url"] = url_match.group(1)
 
-    _yaml_int(content, 'num_ctx', lambda v: out.__setitem__("context_size", v))
-    _yaml_int(content, 'max_tokens', lambda v: out.__setitem__("max_tokens", v))
-    _yaml_bool(content, 'think', lambda v: out.__setitem__("thinking", v))
+    _yaml_int(block, 'num_ctx', lambda v: out.__setitem__("context_size", v))
+    _yaml_int(block, 'max_tokens', lambda v: out.__setitem__("max_tokens", v))
+    _yaml_bool(block, 'think', lambda v: out.__setitem__("thinking", v))
 
-    if "ollama_chat/" in content:
+    if "ollama_chat/" in block:
         out["engine_mode"] = "litellm_chat"
-    elif "ollama/" in content:
+    elif "ollama/" in block:
         out["engine_mode"] = "litellm_standard"
     else:
         out["engine_mode"] = "direct"
 
     return out
+
+
+_ENTRY_START_RE = re.compile(r'^\s*-\s*model_name:\s*(\S+)\s*$')
+
+
+def _config_entries(content: str) -> list:
+    entries = []
+    current = None
+    for line in content.splitlines():
+        start = _ENTRY_START_RE.match(line)
+        if start:
+            current = [start.group(1).strip('"').strip("'"), [line]]
+            entries.append(current)
+        elif current is not None:
+            if line and not line[0].isspace() and not line.startswith("-"):
+                current = None
+            else:
+                current[1].append(line)
+    return [(name, "\n".join(lines)) for name, lines in entries]
+
+
+def _active_entry(entries: list):
+    named = [e for e in entries if e[0] != "*"]
+    for name, block in named:
+        target = re.search(r'^\s*model:\s*(?:ollama_chat/|ollama/)(\S+)\s*$', block, re.MULTILINE)
+        if target and _same_tag(name, target.group(1)):
+            return name, block
+    for entry in named:
+        if entry[0] not in model_registry.ROLE_NAMES:
+            return entry
+    return named[0] if named else None
+
+
+def load_role_aliases(path: Path) -> dict:
+    try:
+        content = path.read_text(encoding="utf-8")
+    except (FileNotFoundError, OSError):
+        return {}
+    entries = _config_entries(content)
+    active = _active_entry(entries)
+    aliases = {}
+    for name, block in entries:
+        if active and name == active[0] and block == active[1]:
+            continue
+        if name not in model_registry.ROLE_NAMES:
+            continue
+        m = re.search(r'^\s*model:\s*(?:ollama_chat/|ollama/)(\S+)\s*$', block, re.MULTILINE)
+        if m:
+            aliases[name] = m.group(1)
+    return aliases
 
 
 def load_full(working_dir: Path) -> ModelConfig:
@@ -401,8 +453,7 @@ def write_modelfile(cfg: ModelConfig, path: Path, working_dir=None) -> None:
     )
 
 
-CONFIG_YAML_TEMPLATE = """model_list:
-  - model_name: {tag}
+CONFIG_ENTRY_TEMPLATE = """  - model_name: {name}
     litellm_params:
       model: {prefix}{tag}
       api_base: {ollama_url}
@@ -410,7 +461,10 @@ CONFIG_YAML_TEMPLATE = """model_list:
       max_tokens: {max_tokens}
       extra_body:
         think: {thinking}
+"""
 
+CONFIG_YAML_TEMPLATE = """model_list:
+{entries}
 litellm_settings:
   drop_params: true
   ignore_invalid_params: true
@@ -419,28 +473,120 @@ litellm_settings:
   json_logs: false
 """
 
+ALIAS_MAX_CONTEXT = 8192
 
-def write_config_yaml(cfg: ModelConfig, path: Path) -> None:
+
+_norm_tag = model_registry.normalize_tag
+
+
+def _same_tag(a: str, b: str) -> bool:
+    return _norm_tag(a) == _norm_tag(b)
+
+
+def _tag_known(tag: str, known) -> bool:
+    return _norm_tag(tag) in {_norm_tag(k) for k in known if k}
+
+
+def resolve_role_aliases(cfg: ModelConfig, role_map=None, registered_tags=None):
+    if role_map is None:
+        role_map = model_registry.role_tags()
+    known = {k for k in (registered_tags or ()) if k}
+    active = cfg.model_tag or ""
+    aliases = {}
+    issues = []
+    if not active:
+        return aliases, ["No active model tag, so no role aliases were written."]
+    valid = {}
+    for role in model_registry.ROLE_NAMES:
+        try:
+            if role_map.get(role):
+                valid[role] = model_registry.validate_role_tag(role_map[role])
+        except ValueError:
+            pass
+    conflicts = model_registry.conflicting_roles(valid)
+
+    for role in model_registry.ROLE_NAMES:
+        raw = role_map.get(role)
+        if not raw:
+            continue
+        try:
+            target = model_registry.validate_role_tag(raw)
+        except ValueError as exc:
+            issues.append(f"'{role}' skipped: {exc}")
+            continue
+        if role in conflicts:
+            issues.append(f"'{role}' skipped: {conflicts[role]}")
+            continue
+        if _same_tag(role, active):
+            issues.append(f"'{role}' skipped: alias name collides with the active model tag.")
+            continue
+        if known and _tag_known(role, known):
+            issues.append(f"'{role}' skipped: alias name would shadow an installed Ollama model.")
+            continue
+        if role in model_registry.ACTIVE_ONLY_ROLES:
+            if not _same_tag(target, active):
+                issues.append(
+                    f"'{role}' skipped: it maps to '{target}' but the active model is "
+                    f"'{active}'. Select that model as active to route '{role}' to it."
+                )
+                continue
+            aliases[role] = active
+            continue
+        if not known:
+            issues.append(f"'{role}' skipped: Ollama model list unavailable, cannot verify '{target}'.")
+            continue
+        if not _tag_known(target, known):
+            issues.append(f"'{role}' skipped: '{target}' is not installed in Ollama.")
+            continue
+        if role in model_registry.VISION_ROLES:
+            coding = aliases.get("coding")
+            if _same_tag(target, active) or (coding and _same_tag(target, coding)):
+                issues.append(f"'{role}' skipped: '{target}' is a text model, not a distinct vision model.")
+                continue
+        aliases[role] = target
+    return aliases, issues
+
+
+def render_config_yaml(cfg: ModelConfig, role_map=None, registered_tags=None) -> str:
     if not cfg.model_tag:
         raise ValueError("Cannot write config.yaml: no model tag set.")
     if cfg.engine_mode not in VALID_ENGINE_MODES:
         raise ValueError(f"Unknown engine_mode: {cfg.engine_mode!r}")
+    if cfg.model_tag.strip() in ("*", '"*"'):
+        raise ValueError("Cannot write config.yaml: wildcard model tags are not allowed.")
 
     prefix = "ollama_chat/" if cfg.engine_mode == "litellm_chat" else "ollama/"
-    path.write_text(
-        CONFIG_YAML_TEMPLATE.format(
-            tag=cfg.model_tag,
+    active_ctx = int(cfg.context_size)
+    alias_ctx = min(active_ctx, ALIAS_MAX_CONTEXT)
+    entries = [CONFIG_ENTRY_TEMPLATE.format(
+        name=cfg.model_tag,
+        prefix=prefix,
+        tag=cfg.model_tag,
+        ollama_url=cfg.ollama_base_url,
+        context_size=active_ctx,
+        max_tokens=min(int(cfg.max_tokens), active_ctx),
+        thinking="true" if cfg.thinking else "false",
+    )]
+    aliases, _issues = resolve_role_aliases(cfg, role_map, registered_tags)
+    for role, target in aliases.items():
+        on_active = _same_tag(target, cfg.model_tag)
+        entries.append(CONFIG_ENTRY_TEMPLATE.format(
+            name=role,
             prefix=prefix,
+            tag=target,
             ollama_url=cfg.ollama_base_url,
-            context_size=cfg.context_size,
-            max_tokens=cfg.max_tokens,
-            thinking="true" if cfg.thinking else "false",
-        ),
-        encoding="utf-8",
-    )
+            context_size=alias_ctx,
+            max_tokens=min(int(cfg.max_tokens), alias_ctx),
+            thinking="true" if (cfg.thinking and on_active) else "false",
+        ))
+    return CONFIG_YAML_TEMPLATE.format(entries="".join(entries))
 
 
-def write_all(cfg: ModelConfig, working_dir: Path, registered_tags=None) -> None:
+def write_config_yaml(cfg: ModelConfig, path: Path, role_map=None, registered_tags=None) -> None:
+    path.write_text(render_config_yaml(cfg, role_map, registered_tags), encoding="utf-8")
+
+
+def write_all(cfg: ModelConfig, working_dir: Path, registered_tags=None, role_map=None) -> None:
     """Persist both files in one call.
 
     Refuses to write when the model tag and the selected weights disagree, since
@@ -455,5 +601,6 @@ def write_all(cfg: ModelConfig, working_dir: Path, registered_tags=None) -> None
             + "\n".join(issues)
             + "\n\nFix the model tag or re-pick the GGUF, then save again."
         )
+    config_text = render_config_yaml(cfg, role_map, registered_tags)
     write_modelfile(cfg, working_dir / "Modelfile", working_dir)
-    write_config_yaml(cfg, working_dir / "config.yaml")
+    (working_dir / "config.yaml").write_text(config_text, encoding="utf-8")

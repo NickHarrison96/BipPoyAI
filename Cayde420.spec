@@ -1,11 +1,19 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+from importlib.metadata import PackageNotFoundError, distribution
+
+try:
+    vad_file = distribution('silero-vad').locate_file('silero_vad/data/silero_vad.onnx')
+    voice_data = [(str(vad_file), 'silero_vad/data')] if vad_file.is_file() else []
+except PackageNotFoundError:
+    voice_data = []
+
 
 a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
-    datas=[],
+    datas=voice_data,
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},

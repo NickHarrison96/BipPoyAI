@@ -30,6 +30,7 @@ import requests
 import settings
 import netutil
 import memory_vault
+import model_registry
 from configs import derive_model_tag
 
 
@@ -353,8 +354,10 @@ class StatusWorker(QThread):
                 ollama_status = "live"
                 data = resp.json()
                 models = data.get("models", [])
-                model_names = [m.get("name", "").split(":")[0] for m in models]
-                if self.model_tag in model_names:
+                model_names = [m.get("name", "") for m in models if m.get("name")]
+                if model_registry.normalize_tag(self.model_tag) in {
+                    model_registry.normalize_tag(name) for name in model_names
+                }:
                     model_status = "ready"
                 else:
                     model_status = "not_found"
@@ -576,8 +579,8 @@ class ModelManager(QThread):
 
 class ModelPreloader(QThread):
     """
-    Runs `ollama run <tag> "" --keepalive 24h` so the weights are resident in
-    VRAM before the first request instead of paging in mid-conversation.
+    Runs `ollama run <tag> "" --keepalive 5m` to warm the first request without
+    keeping old weights resident indefinitely when switching models.
     """
     progress_update = Signal(str)
     finished_ok = Signal()
@@ -591,7 +594,7 @@ class ModelPreloader(QThread):
         try:
             self.progress_update.emit(f"Loading weights for '{self.model_tag}'...")
             process = subprocess.run(
-                ["ollama", "run", self.model_tag, "", "--keepalive", "24h"],
+                ["ollama", "run", self.model_tag, "", "--keepalive", "5m"],
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
@@ -600,7 +603,7 @@ class ModelPreloader(QThread):
                 creationflags=subprocess.CREATE_NO_WINDOW,
             )
             if process.returncode == 0:
-                self.progress_update.emit("Model loaded and kept warm for 24h.")
+                self.progress_update.emit("Model loaded and kept warm for 5 minutes.")
                 self.finished_ok.emit()
             else:
                 stderr = (process.stderr or "").strip()
@@ -796,12 +799,9 @@ class OllamaBackend(QObject):
         if mode in ("direct", "litellm_standard", "litellm_chat"):
             self.engine_mode = mode
 
-    def send_message(self, user_message: str) -> ChatWorker:
-        """
-        Send a message and start streaming the response.
-        Uses direct Ollama or LiteLLM depending on engine_mode.
-        Returns the ChatWorker so the GUI can connect to its signals.
-        """
+    def send_message(self, user_message: str, *, engine_mode: Optional[str] = None,
+                     model_tag: Optional[str] = None) -> ChatWorker:
+        """Create a chat worker using active settings or per-request overrides."""
         self.conversation.append({
             "role": "user",
             "content": user_message,
@@ -809,11 +809,11 @@ class OllamaBackend(QObject):
 
         worker = ChatWorker(
             messages=list(self.conversation),  # copy
-            model=self.model_tag,
+            model=model_tag or self.model_tag,
             temperature=self.temperature,
             max_tokens=self.max_tokens,
             num_ctx=self.num_ctx,
-            engine_mode=self.engine_mode,
+            engine_mode=engine_mode or self.engine_mode,
             ollama_base_url=self.ollama_base_url,
             litellm_base_url=self.litellm_base_url,
             litellm_api_key=self.litellm_api_key,
@@ -919,7 +919,7 @@ class OllamaBackend(QObject):
         self.model_tag = tag
 
     def installed_models(self) -> List[str]:
-        """Names (without ':latest') of the models currently registered in Ollama.
+        """Full model tags currently registered in Ollama.
 
         Synchronous — used at model-switch time so the GUI can warn immediately
         when the selected weights have not been built into Ollama yet. Returns an
@@ -929,7 +929,7 @@ class OllamaBackend(QObject):
             resp = requests.get(f"{self.ollama_base_url}/api/tags", timeout=2)
             if resp.status_code == 200:
                 models = resp.json().get("models", [])
-                return [m.get("name", "").split(":")[0] for m in models]
+                return [m.get("name", "") for m in models if m.get("name")]
         except Exception:
             pass
         return []

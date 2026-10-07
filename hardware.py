@@ -38,7 +38,7 @@ class GPUInfo:
 @dataclass
 class Recommendations:
     context_size: int = 32768
-    gpu_layers: int = 99
+    gpu_layers: int = 1
     cpu_threads: int = 6
     batch_size: int = 512
     temperature: float = 0.2
@@ -88,15 +88,22 @@ def _recommend(cpu_cores: int, ram_gb: float, gpu: Optional[GPUInfo],
                ollama_running: bool) -> Recommendations:
     r = Recommendations()
 
+    # Dual-GPU systems (NVIDIA + AMD): Use gpu_layers=1 to force single GPU usage.
+    # On Windows, Ollama may try to spread layers across both GPUs when gpu_layers=99,
+    # which causes VRAM issues since AMD RX 580 has limited VRAM.
+    # Set gpu_layers=1 to use only the NVIDIA GPU (device 0).
     if gpu and gpu.total_vram_gb > 0:
         vram = gpu.total_vram_gb
         if vram >= 8:
-            r.gpu_layers = 99
+            # For dual-GPU systems, gpu_layers=1 ensures NVIDIA-only usage.
+            # Change to gpu_layers=99 only if you have a single NVIDIA GPU.
+            r.gpu_layers = 1
             r.context_size = max(32768, cpu_cores * 1024)
             r.cpu_threads = max(2, cpu_cores - 4)
             r.batch_size = 1024
         elif vram >= 4:
-            r.gpu_layers = 99
+            # For dual-GPU systems, gpu_layers=1 ensures NVIDIA-only usage.
+            r.gpu_layers = 1
             r.context_size = max(16384, cpu_cores * 512)
             r.cpu_threads = max(2, cpu_cores - 2)
             r.batch_size = 512

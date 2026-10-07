@@ -21,13 +21,22 @@ the per-model folders are the source they are swapped from.
 """
 
 import json
+import re
 import shutil
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Mapping, Optional
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 STATE_DIR = PROJECT_ROOT / ".state"
 EXTERNAL_FILE = STATE_DIR / "external_paths.json"
+ROLE_MODELS_FILE = STATE_DIR / "role_models.json"
+
+ROLE_NAMES = ("default", "reasoning", "coding", "vision", "multimodal")
+ACTIVE_ONLY_ROLES = ("default", "reasoning")
+VISION_ROLES = ("vision", "multimodal")
+MAX_ROLE_TAG_LENGTH = 160
+
+_ROLE_TAG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)*(:[A-Za-z0-9][A-Za-z0-9._-]*)?$")
 
 
 def _load_json(path: Path) -> dict:
@@ -65,6 +74,97 @@ def forget_external(filename: str) -> None:
     if filename in data:
         del data[filename]
         _save_json(EXTERNAL_FILE, data)
+
+
+def validate_role(role) -> str:
+    if not isinstance(role, str) or role not in ROLE_NAMES:
+        raise ValueError(f"Unknown role {role!r}; expected one of {', '.join(ROLE_NAMES)}.")
+    return role
+
+
+def validate_role_tag(tag) -> str:
+    if not isinstance(tag, str):
+        raise ValueError("Role tag must be a string.")
+    value = tag.strip()
+    if not value:
+        raise ValueError("Role tag is empty.")
+    if len(value) > MAX_ROLE_TAG_LENGTH:
+        raise ValueError(f"Role tag is longer than {MAX_ROLE_TAG_LENGTH} characters.")
+    if "*" in value or "\\" in value or ".." in value:
+        raise ValueError(f"Role tag {value!r} is not an exact Ollama tag.")
+    if re.match(r"^[A-Za-z]:", value) or value.lower().endswith(".gguf"):
+        raise ValueError(f"Role tag {value!r} looks like a file path, not an Ollama tag.")
+    if not _ROLE_TAG_RE.match(value):
+        raise ValueError(f"Role tag {value!r} is not a valid Ollama tag.")
+    return value
+
+
+def _clean_role_mapping(mapping: Mapping) -> Dict[str, str]:
+    cleaned: Dict[str, str] = {}
+    for role, tag in mapping.items():
+        validate_role(role)
+        if tag is None or (isinstance(tag, str) and not tag.strip()):
+            continue
+        cleaned[role] = validate_role_tag(tag)
+    return cleaned
+
+
+def normalize_tag(tag: str) -> str:
+    value = tag.strip().lower()
+    return value[:-len(":latest")] if value.endswith(":latest") else value
+
+
+def conflicting_roles(mapping: Mapping[str, str]) -> Dict[str, str]:
+    conflicts: Dict[str, str] = {}
+    default = mapping.get("default")
+    reasoning = mapping.get("reasoning")
+    if default and reasoning and normalize_tag(default) != normalize_tag(reasoning):
+        msg = "'default' and 'reasoning' must name the same (active) model tag."
+        conflicts["default"] = msg
+        conflicts["reasoning"] = msg
+    text_tags = {normalize_tag(mapping[r]) for r in ACTIVE_ONLY_ROLES + ("coding",) if mapping.get(r)}
+    for role in VISION_ROLES:
+        tag = mapping.get(role)
+        if tag and normalize_tag(tag) in text_tags:
+            conflicts[role] = f"'{role}' must name a distinct vision model, not '{tag}'."
+    return conflicts
+
+
+def role_mapping_issues(mapping: Mapping[str, str]) -> list:
+    return sorted(set(conflicting_roles(mapping).values()))
+
+
+def role_tags() -> Dict[str, str]:
+    data = _load_json(ROLE_MODELS_FILE)
+    out: Dict[str, str] = {}
+    for role in ROLE_NAMES:
+        tag = data.get(role)
+        if not tag:
+            continue
+        try:
+            out[role] = validate_role_tag(tag)
+        except ValueError:
+            continue
+    for role in conflicting_roles(out):
+        out.pop(role, None)
+    return out
+
+
+def save_role_tags(mapping: Mapping[str, Optional[str]]) -> Dict[str, str]:
+    cleaned = _clean_role_mapping(mapping)
+    issues = role_mapping_issues(cleaned)
+    if issues:
+        raise ValueError("Refusing to save role models:\n" + "\n".join(issues))
+    ROLE_MODELS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    ROLE_MODELS_FILE.write_text(json.dumps(cleaned, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return dict(cleaned)
+
+
+def set_role_tag(role: str, tag: Optional[str]) -> Dict[str, str]:
+    validate_role(role)
+    current: Dict[str, Optional[str]] = dict(role_tags())
+    current[role] = tag
+    return save_role_tags(current)
 
 
 def is_in_project(path: Path) -> bool:

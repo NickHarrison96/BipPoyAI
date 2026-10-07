@@ -551,7 +551,7 @@ python mcp_server.py --register    # prints the `claude mcp add` line; run it yo
 
 | Issue | Notes |
 |
-- GPU config noted: RX 580 8GB in PCIe x4 slot, RTX 2070 SUPER remains in x16 slot 1. llamaGPU support files at C:\Users\nick\Desktop\llamaGPU (vulkan + nvidia folders). No code changes requested, notes only.
+- GPU config: NVIDIA RTX 2070 SUPER (primary, 8GB VRAM) on PCIe x16 slot 1; AMD RX 580 (auxiliary, 8GB VRAM) on PCIe x4 slot. llamaGPU support files at C:\Users\nick\Desktop\llamaGPU (vulkan + nvidia folders). **Critical fix**: Modelfile `num_gpu 99` → `num_gpu 1` to force NVIDIA-only usage. Without this, Ollama spreads layers across both GPUs causing VRAM issues. Also ensure `CUDA_VISIBLE_DEVICES="0"` in main.py Ollama launch env (already correct).
 
 ---|---|
 | Backend URLs are live-mutable | Fixed in V0.3 via `settings.py` and `OllamaBackend.update_urls()`. Endpoints are hot-swapped without restart and persisted to `.state/settings.json`. |
